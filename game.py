@@ -5,8 +5,8 @@ from Entities.player import Player
 from map import Map
 
 
-WINDOW_WIDTH = 800
-WINDOW_HEIGHT = 600
+WINDOW_WIDTH = 1280
+WINDOW_HEIGHT = 720
 WINDOW_TITLE = "Mario"
 
 # Скорость плавного движения камеры

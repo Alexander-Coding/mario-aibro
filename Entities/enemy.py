@@ -42,7 +42,7 @@ class Enemy(Entity):
         if not self.is_alive:
             # Анимация смерти
             self.death_timer += delta_time
-            if self.death_timer > 0.5:
+            if self.death_timer > 0.6:
                 self.kill()
             return
 

@@ -2,139 +2,111 @@
     "objects": [
         {
             "x": 80.0,
-            "y": 272.0,
+            "y": 304.0,
             "category": "Blocks",
             "resource": "Bricks",
             "texture_path": "resources/Blocks/Bricks/Block.gif"
         },
         {
             "x": 112.0,
-            "y": 272.0,
+            "y": 304.0,
             "category": "Blocks",
             "resource": "Bricks",
             "texture_path": "resources/Blocks/Bricks/Block.gif"
         },
         {
             "x": 144.0,
-            "y": 272.0,
+            "y": 304.0,
             "category": "Blocks",
             "resource": "Bricks",
             "texture_path": "resources/Blocks/Bricks/Block.gif"
         },
         {
             "x": 176.0,
-            "y": 272.0,
+            "y": 304.0,
             "category": "Blocks",
             "resource": "Bricks",
             "texture_path": "resources/Blocks/Bricks/Block.gif"
         },
         {
             "x": 208.0,
-            "y": 272.0,
+            "y": 304.0,
             "category": "Blocks",
             "resource": "Bricks",
             "texture_path": "resources/Blocks/Bricks/Block.gif"
         },
         {
             "x": 240.0,
-            "y": 272.0,
+            "y": 304.0,
             "category": "Blocks",
             "resource": "Bricks",
             "texture_path": "resources/Blocks/Bricks/Block.gif"
         },
         {
             "x": 272.0,
-            "y": 272.0,
+            "y": 304.0,
             "category": "Blocks",
             "resource": "Bricks",
             "texture_path": "resources/Blocks/Bricks/Block.gif"
         },
         {
             "x": 304.0,
-            "y": 272.0,
+            "y": 304.0,
             "category": "Blocks",
             "resource": "Bricks",
             "texture_path": "resources/Blocks/Bricks/Block.gif"
         },
         {
             "x": 336.0,
-            "y": 272.0,
+            "y": 304.0,
             "category": "Blocks",
             "resource": "Bricks",
             "texture_path": "resources/Blocks/Bricks/Block.gif"
         },
         {
             "x": 368.0,
-            "y": 272.0,
+            "y": 304.0,
             "category": "Blocks",
             "resource": "Bricks",
             "texture_path": "resources/Blocks/Bricks/Block.gif"
         },
         {
             "x": 400.0,
-            "y": 272.0,
+            "y": 304.0,
             "category": "Blocks",
             "resource": "Bricks",
             "texture_path": "resources/Blocks/Bricks/Block.gif"
         },
         {
             "x": 432.0,
-            "y": 272.0,
-            "category": "Blocks",
-            "resource": "Bricks",
-            "texture_path": "resources/Blocks/Bricks/Block.gif"
-        },
-        {
-            "x": 464.0,
-            "y": 272.0,
-            "category": "Blocks",
-            "resource": "Bricks",
-            "texture_path": "resources/Blocks/Bricks/Block.gif"
-        },
-        {
-            "x": 496.0,
-            "y": 272.0,
+            "y": 304.0,
             "category": "Blocks",
             "resource": "Bricks",
             "texture_path": "resources/Blocks/Bricks/Block.gif"
         },
         {
             "x": 528.0,
-            "y": 272.0,
+            "y": 304.0,
             "category": "Blocks",
             "resource": "Bricks",
             "texture_path": "resources/Blocks/Bricks/Block.gif"
         },
         {
             "x": 560.0,
-            "y": 272.0,
+            "y": 304.0,
             "category": "Blocks",
             "resource": "Bricks",
             "texture_path": "resources/Blocks/Bricks/Block.gif"
         },
         {
             "x": 592.0,
-            "y": 272.0,
+            "y": 304.0,
             "category": "Blocks",
             "resource": "Bricks",
             "texture_path": "resources/Blocks/Bricks/Block.gif"
         },
         {
             "x": 624.0,
-            "y": 272.0,
-            "category": "Blocks",
-            "resource": "Bricks",
-            "texture_path": "resources/Blocks/Bricks/Block.gif"
-        },
-        {
-            "x": 656.0,
-            "y": 272.0,
-            "category": "Blocks",
-            "resource": "Bricks",
-            "texture_path": "resources/Blocks/Bricks/Block.gif"
-        },
-        {
-            "x": 80.0,
             "y": 304.0,
             "category": "Blocks",
             "resource": "Bricks",
@@ -142,20 +114,6 @@
         },
         {
             "x": 656.0,
-            "y": 304.0,
-            "category": "Blocks",
-            "resource": "Bricks",
-            "texture_path": "resources/Blocks/Bricks/Block.gif"
-        },
-        {
-            "x": 400.0,
-            "y": 304.0,
-            "category": "Blocks",
-            "resource": "Bricks",
-            "texture_path": "resources/Blocks/Bricks/Block.gif"
-        },
-        {
-            "x": 528.0,
             "y": 304.0,
             "category": "Blocks",
             "resource": "Bricks",
@@ -163,143 +121,66 @@
         },
         {
             "x": 688.0,
-            "y": 272.0,
-            "category": "Blocks",
-            "resource": "Bricks",
-            "texture_path": "resources/Blocks/Bricks/Block.gif"
-        },
-        {
-            "x": 720.0,
-            "y": 272.0,
-            "category": "Blocks",
-            "resource": "Bricks",
-            "texture_path": "resources/Blocks/Bricks/Block.gif"
-        },
-        {
-            "x": 752.0,
-            "y": 272.0,
-            "category": "Blocks",
-            "resource": "Bricks",
-            "texture_path": "resources/Blocks/Bricks/Block.gif"
-        },
-        {
-            "x": 784.0,
-            "y": 272.0,
-            "category": "Blocks",
-            "resource": "Bricks",
-            "texture_path": "resources/Blocks/Bricks/Block.gif"
-        },
-        {
-            "x": 816.0,
-            "y": 272.0,
-            "category": "Blocks",
-            "resource": "Bricks",
-            "texture_path": "resources/Blocks/Bricks/Block.gif"
-        },
-        {
-            "x": 848.0,
-            "y": 272.0,
-            "category": "Blocks",
-            "resource": "Bricks",
-            "texture_path": "resources/Blocks/Bricks/Block.gif"
-        },
-        {
-            "x": 880.0,
-            "y": 272.0,
-            "category": "Blocks",
-            "resource": "Bricks",
-            "texture_path": "resources/Blocks/Bricks/Block.gif"
-        },
-        {
-            "x": 912.0,
-            "y": 272.0,
-            "category": "Blocks",
-            "resource": "Bricks",
-            "texture_path": "resources/Blocks/Bricks/Block.gif"
-        },
-        {
-            "x": 944.0,
-            "y": 272.0,
-            "category": "Blocks",
-            "resource": "Bricks",
-            "texture_path": "resources/Blocks/Bricks/Block.gif"
-        },
-        {
-            "x": 848.0,
             "y": 304.0,
-            "category": "decorations",
-            "resource": "Flag stick",
-            "texture_path": "resources/decorations/Flag stick/img_9.png"
+            "category": "Blocks",
+            "resource": "Bricks",
+            "texture_path": "resources/Blocks/Bricks/Block.gif"
         },
         {
-            "x": 848.0,
+            "x": 240.0,
             "y": 336.0,
-            "category": "decorations",
-            "resource": "Flag stick",
-            "texture_path": "resources/decorations/Flag stick/img_9.png"
+            "category": "Blocks",
+            "resource": "Bricks",
+            "texture_path": "resources/Blocks/Bricks/img.png"
         },
         {
-            "x": 848.0,
+            "x": 272.0,
             "y": 368.0,
-            "category": "decorations",
-            "resource": "Flag stick",
-            "texture_path": "resources/decorations/Flag stick/img_9.png"
+            "category": "Blocks",
+            "resource": "Bricks",
+            "texture_path": "resources/Blocks/Bricks/img.png"
         },
         {
-            "x": 848.0,
+            "x": 304.0,
             "y": 400.0,
-            "category": "decorations",
-            "resource": "Flag stick",
-            "texture_path": "resources/decorations/Flag stick/img_9.png"
-        },
-        {
-            "x": 848.0,
-            "y": 432.0,
-            "category": "decorations",
-            "resource": "Flag stick",
-            "texture_path": "resources/decorations/Flag stick/img_9.png"
-        },
-        {
-            "x": 848.0,
-            "y": 464.0,
-            "category": "decorations",
-            "resource": "Flag stick",
-            "texture_path": "resources/decorations/Flag stick/img_8.png"
-        },
-        {
-            "x": 816.0,
-            "y": 432.0,
-            "category": "objects",
-            "resource": "Flag",
-            "texture_path": "resources/objects/Flag/img_10.png"
+            "category": "Blocks",
+            "resource": "Bricks",
+            "texture_path": "resources/Blocks/Bricks/img.png"
         },
         {
             "x": 400.0,
             "y": 336.0,
-            "category": "objects",
-            "resource": "Coins",
-            "texture_path": "resources/objects/Coins/img.png"
+            "category": "Blocks",
+            "resource": "Bricks",
+            "texture_path": "resources/Blocks/Bricks/img_5.png"
         },
         {
-            "x": 528.0,
+            "x": 560.0,
             "y": 336.0,
-            "category": "objects",
-            "resource": "Coins",
-            "texture_path": "resources/objects/Coins/img.png"
+            "category": "Blocks",
+            "resource": "Bricks",
+            "texture_path": "resources/Blocks/Bricks/img_5.png"
         },
         {
-            "x": 656.0,
+            "x": 688.0,
             "y": 336.0,
-            "category": "objects",
-            "resource": "Coins",
-            "texture_path": "resources/objects/Coins/img.png"
+            "category": "Blocks",
+            "resource": "Bricks",
+            "texture_path": "resources/Blocks/Bricks/img_5.png"
         },
         {
-            "x": 752.0,
-            "y": 336.0,
-            "category": "objects",
-            "resource": "Coins",
-            "texture_path": "resources/objects/Coins/img.png"
+            "x": 464.0,
+            "y": 272.0,
+            "category": "Blocks",
+            "resource": "Bricks",
+            "texture_path": "resources/Blocks/Bricks/img_5.png"
+        },
+        {
+            "x": 496.0,
+            "y": 272.0,
+            "category": "Blocks",
+            "resource": "Bricks",
+            "texture_path": "resources/Blocks/Bricks/img_5.png"
         },
         {
             "x": 496.0,
@@ -309,18 +190,67 @@
             "texture_path": "resources/Entities/goomba/idle/img.png"
         },
         {
-            "x": 592.0,
-            "y": 304.0,
+            "x": 624.0,
+            "y": 336.0,
             "category": "Entities",
             "resource": "koopa",
             "texture_path": "resources/Entities/koopa/idle/img.png"
         },
         {
-            "x": 208.0,
-            "y": 304.0,
+            "x": 144.0,
+            "y": 336.0,
             "category": "Entities",
             "resource": "mario",
             "texture_path": "resources/Entities/mario/idle/Mario.gif"
+        },
+        {
+            "x": 688.0,
+            "y": 368.0,
+            "category": "decorations",
+            "resource": "Flag stick",
+            "texture_path": "resources/decorations/Flag stick/img_9.png"
+        },
+        {
+            "x": 688.0,
+            "y": 400.0,
+            "category": "decorations",
+            "resource": "Flag stick",
+            "texture_path": "resources/decorations/Flag stick/img_9.png"
+        },
+        {
+            "x": 688.0,
+            "y": 432.0,
+            "category": "decorations",
+            "resource": "Flag stick",
+            "texture_path": "resources/decorations/Flag stick/img_9.png"
+        },
+        {
+            "x": 688.0,
+            "y": 464.0,
+            "category": "decorations",
+            "resource": "Flag stick",
+            "texture_path": "resources/decorations/Flag stick/img_9.png"
+        },
+        {
+            "x": 688.0,
+            "y": 496.0,
+            "category": "decorations",
+            "resource": "Flag stick",
+            "texture_path": "resources/decorations/Flag stick/img_9.png"
+        },
+        {
+            "x": 688.0,
+            "y": 528.0,
+            "category": "decorations",
+            "resource": "Flag stick",
+            "texture_path": "resources/decorations/Flag stick/img_8.png"
+        },
+        {
+            "x": 656.0,
+            "y": 496.0,
+            "category": "objects",
+            "resource": "Flag",
+            "texture_path": "resources/objects/Flag/img_10.png"
         }
     ]
 }
