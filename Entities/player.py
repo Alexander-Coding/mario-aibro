@@ -142,14 +142,15 @@ class Player(Entity):
             if self.collides_with_sprite(enemy):
                 enemy.on_collides_with_player(self)
 
-    def check_objects_collides(self, objects: arcade.SpriteList) -> None:
+    def check_objects_collides(self, game, objects: arcade.SpriteList) -> None:
 
         if not self.is_alive:
             return
 
         for obj in objects:
             if self.collides_with_sprite(obj):
-                obj.on_collides_with_player(self)
+                if hasattr(obj, "on_collides_with_player"):
+                    obj.on_collides_with_player(game, self)
 
     def get_hit(self) -> None:
 

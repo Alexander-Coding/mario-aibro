@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import arcade
@@ -9,329 +10,207 @@ from Entities.Enemies.goomba import Goomba
 from Entities.Enemies.koopa import Koopa
 from Objects.Coin import Coin
 from Objects.Flag import Flag
+from Objects.ScoreBlock import ScoreBlock
+
+logger = logging.getLogger(__name__)
+
 
 # =============================================================
 # PATHS
 # =============================================================
 
-# Корень проекта.
-# map.py находится, например:
-#
-# GAME/
-# ├── map.py
-# ├── resources/
-# └── maps/
-#
 BASE_DIR = Path(__file__).resolve().parent
-
-# Папка ресурсов
 RESOURCES_DIR = BASE_DIR / "resources"
-
-# Минимальный размер спрайта
 MIN_TEXTURE_SIZE = 32
 
 
 class Map:
     """
     Загружает карту, созданную в Level Editor.
-
-    Категории ресурсов:
-
-    Blocks      -> стены с коллизией
-    Objects     -> обычные игровые объекты
-    Decorations -> декоративные объекты
-    Entities    -> сущности игры
-
-    Поддерживаемые пути текстур:
-
-        resources/blocks/ground/ground.png
-
-    а также старые варианты:
-
-        ground.png
-        blocks/ground/ground.png
-        /absolute/path/to/ground.png
     """
 
+    MIN_TEXTURE_SIZE = MIN_TEXTURE_SIZE
+
+    # =========================================================
+    # REGISTRIES
+    # =========================================================
+
+    OBJECT_REGISTRY: dict[str, type] = {
+        "coins":      Coin,
+        "flag":       Flag,
+        "scoreblock": ScoreBlock,
+    }
+
+    ENEMY_REGISTRY: dict[str, type] = {
+        "goomba": Goomba,
+        "koopa":  Koopa,
+    }
+
+    # =========================================================
+    # CATEGORY ALIASES
+    # =========================================================
+
+    _BLOCK_ALIASES = {"blocks", "block", "блоки"}
+    _OBJECT_ALIASES = {"objects", "object", "объекты"}
+    _DECORATION_ALIASES = {
+        "decorations", "decoration", "декорации", "decorates"
+    }
+    _ENTITY_ALIASES = {"entities", "entity", "сущности"}
+
+    # =========================================================
+    # INIT
+    # =========================================================
+
     def __init__(self, map_file: str):
-        self.map_file = Path(map_file)
+        # Путь к карте
+        path = Path(map_file)
+        if not path.is_absolute():
+            path = BASE_DIR / path
+        self.map_file = path
 
-        # Если путь к карте относительный,
-        # считаем его относительно проекта.
-        if not self.map_file.is_absolute():
-            self.map_file = BASE_DIR / self.map_file
+        # ---------- CACHES ----------
+        self._texture_cache: dict[Path, arcade.Texture] = {}
+        self._path_cache: dict[tuple[str, str, str], Path | None] = {}
 
-        # =====================================================
-        # MAP INFO
-        # =====================================================
+        # Индекс файлов ресурсов: имя файла -> список путей
+        self._resource_index: dict[str, list[Path]] = {}
+        self._build_resource_index()
 
-        self.name = "Unnamed Level"
-
+        # ---------- MAP INFO ----------
+        self.name = "Level_1"
         self.width = 3000
         self.height = 600
+        self.player_spawn = {"x": 100, "y": 100}
 
-        self.player_spawn = {
-            "x": 100,
-            "y": 100
-        }
-
-        # =====================================================
-        # SPRITE LISTS
-        # =====================================================
-
-        # Блоки с физикой
+        # ---------- SPRITE LISTS ----------
         self.walls = arcade.SpriteList()
-
-        # Обычные игровые объекты
         self.objects = arcade.SpriteList()
-
-        # Декорации
         self.decorations = arcade.SpriteList()
-
-        # Враги
         self.enemies = arcade.SpriteList()
-
-        # Все игровые сущности
         self.entities = arcade.SpriteList()
 
-        # =====================================================
-        # LOAD
-        # =====================================================
+        # ---------- CATEGORY DISPATCH ----------
+        self._category_handlers = {
+            **{alias: self.create_block_from_editor
+               for alias in self._BLOCK_ALIASES},
+            **{alias: self.create_object_from_editor
+               for alias in self._OBJECT_ALIASES},
+            **{alias: self.create_decoration_from_editor
+               for alias in self._DECORATION_ALIASES},
+            **{alias: self.create_entity_from_editor
+               for alias in self._ENTITY_ALIASES},
+        }
 
+        # ---------- LOAD ----------
         self.load_map()
+
+    # =========================================================
+    # RESOURCE INDEX
+    # =========================================================
+
+    def _build_resource_index(self) -> None:
+        """Один раз обходит resources/ и строит индекс по имени файла."""
+        if not RESOURCES_DIR.exists():
+            return
+        for file_path in RESOURCES_DIR.rglob("*"):
+            if file_path.is_file():
+                self._resource_index.setdefault(
+                    file_path.name, []
+                ).append(file_path)
+
+    # =========================================================
+    # TEXTURE CACHE
+    # =========================================================
+
+    def _get_texture(self, texture_file: Path) -> arcade.Texture | None:
+        cached = self._texture_cache.get(texture_file)
+        if cached is not None:
+            return cached
+
+        try:
+            texture = arcade.load_texture(str(texture_file))
+        except Exception as error:
+            logger.warning(
+                "[Map] Ошибка загрузки текстуры %s: %s",
+                texture_file, error,
+            )
+            return None
+
+        self._texture_cache[texture_file] = texture
+        return texture
 
     # =========================================================
     # LOAD MAP
     # =========================================================
 
     def load_map(self) -> None:
-        """
-        Загружает карту из JSON.
-        """
-
         if not self.map_file.exists():
             raise FileNotFoundError(
                 f"Файл карты не найден: {self.map_file}"
             )
 
-        with open(
-            self.map_file,
-            "r",
-            encoding="utf-8"
-        ) as file:
+        with open(self.map_file, "r", encoding="utf-8") as file:
             data = json.load(file)
 
-        # =====================================================
-        # MAP SETTINGS
-        # =====================================================
-
-        self.name = data.get(
-            "name",
-            "Unnamed Level"
-        )
-
-        self.width = data.get(
-            "width",
-            3000
-        )
-
-        self.height = data.get(
-            "height",
-            600
-        )
-
+        # ---------- MAP SETTINGS ----------
+        self.name = data.get("name", "Unnamed Level")
+        self.width = data.get("width", 3000)
+        self.height = data.get("height", 600)
         self.player_spawn = data.get(
-            "player_spawn",
-            {
-                "x": 100,
-                "y": 100
-            }
+            "player_spawn", {"x": 100, "y": 100}
         )
 
-        # =====================================================
-        # LOAD EDITOR OBJECTS
-        # =====================================================
+        objects = data.get("objects", [])
 
-        objects = data.get(
-            "objects",
-            []
-        )
-
-        print(
-            f"\n[Map] Загрузка карты: {self.name}"
-        )
-
-        print(
-            f"[Map] Размер: "
-            f"{self.width} x {self.height}"
-        )
-
-        print(
-            f"[Map] Объектов: "
-            f"{len(objects)}"
-        )
+        logger.info("[Map] Загрузка карты: %s", self.name)
+        logger.info("[Map] Размер: %s x %s", self.width, self.height)
+        logger.info("[Map] Объектов: %s", len(objects))
 
         for object_data in objects:
-
             try:
-                self.create_editor_object(
-                    object_data
-                )
-
+                self.create_editor_object(object_data)
             except Exception as error:
-
-                print(
-                    f"[Map] Ошибка создания объекта: "
-                    f"{object_data}"
+                logger.exception(
+                    "[Map] Ошибка создания объекта %s: %s",
+                    object_data, error,
                 )
 
-                print(
-                    f"[Map] Ошибка: {error}"
-                )
-
-        print(
-            "[Map] Карта успешно загружена"
-        )
+        logger.info("[Map] Карта успешно загружена")
 
     # =========================================================
-    # CREATE EDITOR OBJECT
+    # CREATE EDITOR OBJECT (dispatch)
     # =========================================================
 
-    def create_editor_object(
-        self,
-        data: dict
-    ) -> None:
-        """
-        Создаёт объект, сохранённый редактором.
-        """
-
+    def create_editor_object(self, data: dict) -> None:
         category = self.get_category(data)
-
         if not category:
-
-            print(
-                f"[Map] Не удалось определить категорию: "
-                f"{data}"
+            logger.warning(
+                "[Map] Не удалось определить категорию: %s", data
             )
-
             return
 
-        category_lower = category.lower()
+        handler = self._category_handlers.get(category.lower())
+        if handler is None:
+            logger.warning("[Map] Неизвестная категория: %s", category)
+            return
 
-        # =====================================================
-        # BLOCKS
-        # =====================================================
-
-        if category_lower in (
-            "blocks",
-            "block",
-            "блоки"
-        ):
-
-            self.create_block_from_editor(
-                data
-            )
-
-        # =====================================================
-        # OBJECTS
-        # =====================================================
-
-        elif category_lower in (
-            "objects",
-            "object",
-            "объекты"
-        ):
-
-            self.create_object_from_editor(
-                data
-            )
-
-        # =====================================================
-        # DECORATIONS
-        # =====================================================
-
-        elif category_lower in (
-            "decorations",
-            "decoration",
-            "декорации",
-            "decorates"
-        ):
-
-            self.create_decoration_from_editor(
-                data
-            )
-
-        # =====================================================
-        # ENTITIES
-        # =====================================================
-
-        elif category_lower in (
-            "entities",
-            "entity",
-            "сущности"
-        ):
-
-            self.create_entity_from_editor(
-                data
-            )
-
-        else:
-
-            print(
-                f"[Map] Неизвестная категория: "
-                f"{category}"
-            )
+        handler(data)
 
     # =========================================================
     # CATEGORY
     # =========================================================
 
-    def get_category(
-        self,
-        data: dict
-    ) -> str | None:
-        """
-        Получает категорию объекта.
+    def get_category(self, data: dict) -> str | None:
+        for key in ("category", "type", "resource_category"):
+            value = data.get(key)
+            if value:
+                return str(value)
 
-        Поддерживает несколько вариантов JSON.
-        """
-
-        category = data.get(
-            "category"
-        )
-
-        if category:
-            return str(category)
-
-        category = data.get(
-            "type"
-        )
-
-        if category:
-            return str(category)
-
-        # Иногда resource может быть объектом
-        resource = data.get(
-            "resource"
-        )
-
+        resource = data.get("resource")
         if isinstance(resource, dict):
-
-            category = resource.get(
-                "category"
-            )
-
-            if category:
-                return str(category)
-
-        # Иногда категория может быть внутри
-        # resource_category
-        category = data.get(
-            "resource_category"
-        )
-
-        if category:
-            return str(category)
+            value = resource.get("category")
+            if value:
+                return str(value)
 
         return None
 
@@ -339,113 +218,28 @@ class Map:
     # POSITION
     # =========================================================
 
-    def get_position(
-        self,
-        data: dict
-    ) -> tuple[float, float]:
-        """
-        Возвращает позицию объекта.
-        """
-
-        x = float(
-            data.get(
-                "x",
-                0
-            )
+    def get_position(self, data: dict) -> tuple[float, float]:
+        return (
+            float(data.get("x", 0)),
+            float(data.get("y", 0)),
         )
-
-        y = float(
-            data.get(
-                "y",
-                0
-            )
-        )
-
-        return x, y
 
     # =========================================================
     # TEXTURE PATH
     # =========================================================
 
-    def get_texture_path(
-        self,
-        data: dict
-    ) -> str | None:
-        """
-        Получает путь к текстуре из объекта карты.
+    def get_texture_path(self, data: dict) -> str | None:
+        for key in ("texture", "texture_path", "path"):
+            value = data.get(key)
+            if value:
+                return str(value)
 
-        Поддерживает:
-
-            texture
-            texture_path
-            path
-
-        а также вложенный resource.
-        """
-
-        # =====================================================
-        # DIRECT TEXTURE
-        # =====================================================
-
-        texture_path = data.get(
-            "texture"
-        )
-
-        if texture_path:
-            return str(texture_path)
-
-        # =====================================================
-        # TEXTURE PATH
-        # =====================================================
-
-        texture_path = data.get(
-            "texture_path"
-        )
-
-        if texture_path:
-            return str(texture_path)
-
-        # =====================================================
-        # PATH
-        # =====================================================
-
-        texture_path = data.get(
-            "path"
-        )
-
-        if texture_path:
-            return str(texture_path)
-
-        # =====================================================
-        # RESOURCE DICTIONARY
-        # =====================================================
-
-        resource = data.get(
-            "resource"
-        )
-
+        resource = data.get("resource")
         if isinstance(resource, dict):
-
-            texture_path = resource.get(
-                "texture"
-            )
-
-            if texture_path:
-                return str(texture_path)
-
-            texture_path = resource.get(
-                "path"
-            )
-
-            if texture_path:
-                return str(texture_path)
-
-            texture_path = resource.get(
-                "texture_path"
-            )
-
-            if texture_path:
-                return str(texture_path)
+            for key in ("texture", "path", "texture_path"):
+                value = resource.get(key)
+                if value:
+                    return str(value)
 
         return None
 
@@ -453,141 +247,38 @@ class Map:
     # RESOURCE NAME
     # =========================================================
 
-    def get_resource_name(
-        self,
-        data: dict
-    ) -> str:
-        """
-        Получает имя ресурса.
+    def get_resource_name(self, data: dict) -> str:
+        resource = data.get("resource")
 
-        Например:
+        if isinstance(resource, str) and resource.strip():
+            return resource.strip()
 
-            resources/blocks/ground/ground.png
-
-        ресурс:
-
-            ground
-
-        Для Entities:
-
-            resources/entities/goomba/idle/0.png
-
-        ресурс:
-
-            goomba
-        """
-
-        # =====================================================
-        # RESOURCE STRING
-        # =====================================================
-
-        resource = data.get(
-            "resource"
-        )
-
-        # В текущем JSON редактора:
-        #
-        # "resource": "ground"
-        #
-        if isinstance(resource, str):
-
-            if resource.strip():
-                return resource.strip()
-
-        # =====================================================
-        # RESOURCE NAME
-        # =====================================================
-
-        name = data.get(
-            "resource_name"
-        )
-
-        if name:
-            return str(name)
-
-        # =====================================================
-        # GROUP
-        # =====================================================
-
-        name = data.get(
-            "group"
-        )
-
-        if name:
-            return str(name)
-
-        # =====================================================
-        # RESOURCE DICTIONARY
-        # =====================================================
+        for key in ("resource_name", "group"):
+            value = data.get(key)
+            if value:
+                return str(value)
 
         if isinstance(resource, dict):
+            for key in ("name", "group"):
+                value = resource.get(key)
+                if value:
+                    return str(value)
 
-            name = resource.get(
-                "name"
-            )
-
-            if name:
-                return str(name)
-
-            name = resource.get(
-                "group"
-            )
-
-            if name:
-                return str(name)
-
-        # =====================================================
-        # TRY TO DETERMINE FROM TEXTURE PATH
-        # =====================================================
-
-        texture_path = self.get_texture_path(
-            data
-        )
-
+        texture_path = self.get_texture_path(data)
         if texture_path:
-
-            path = Path(
-                texture_path.replace(
-                    "\\",
-                    "/"
-                )
-            )
-
+            path = Path(texture_path.replace("\\", "/"))
             parts = path.parts
+            lower_parts = [p.lower() for p in parts]
 
-            # -------------------------------------------------
-            # resources/<category>/<resource>/<texture>
-            # -------------------------------------------------
-
-            for index, part in enumerate(parts):
-
-                if part.lower() == "resources":
-
-                    if index + 2 < len(parts):
-
-                        return parts[index + 2]
-
-            # -------------------------------------------------
-            # Если путь:
-            #
-            # blocks/ground/ground.png
-            # -------------------------------------------------
+            if "resources" in lower_parts:
+                idx = lower_parts.index("resources")
+                if idx + 2 < len(parts):
+                    return parts[idx + 2]
 
             if len(parts) >= 3:
-
                 return parts[-2]
 
-            # -------------------------------------------------
-            # Если просто:
-            #
-            # ground.png
-            #
-            # имя ресурса определить невозможно,
-            # поэтому используем имя файла без расширения.
-            # -------------------------------------------------
-
             if len(parts) == 1:
-
                 return path.stem
 
         return "unknown"
@@ -596,515 +287,186 @@ class Map:
     # RESOLVE TEXTURE PATH
     # =========================================================
 
-    def resolve_texture_path(
-        self,
-        data: dict
-    ) -> Path | None:
-        """
-        Преобразует путь из JSON в реальный путь файла.
-
-        Новый формат:
-
-            resources/blocks/ground/ground.png
-
-        Старые форматы:
-
-            ground.png
-
-            blocks/ground/ground.png
-
-            /absolute/path/to/ground.png
-        """
-
-        texture_path = self.get_texture_path(
-            data
-        )
-
+    def resolve_texture_path(self, data: dict) -> Path | None:
+        texture_path = self.get_texture_path(data)
         if not texture_path:
             return None
 
-        # Нормализуем Windows-разделители
-        texture_path = texture_path.replace(
-            "\\",
-            "/"
+        texture_path = texture_path.replace("\\", "/")
+        category = (self.get_category(data) or "").lower()
+        resource_name = self.get_resource_name(data)
+
+        cache_key = (category, resource_name, texture_path)
+        if cache_key in self._path_cache:
+            return self._path_cache[cache_key]
+
+        result = self._resolve_texture_path_uncached(
+            texture_path, category, resource_name
         )
+        self._path_cache[cache_key] = result
+        return result
 
-        path = Path(
-            texture_path
-        )
+    def _resolve_texture_path_uncached(
+        self,
+        texture_path: str,
+        category: str,
+        resource_name: str,
+    ) -> Path | None:
+        path = Path(texture_path)
 
-        # =====================================================
-        # 1. ABSOLUTE PATH
-        # =====================================================
-
+        # 1. Абсолютный путь
         if path.is_absolute():
-
-            if path.exists():
-                return path
-
-            return None
-
-        # =====================================================
-        # 2. PROJECT-RELATIVE PATH
-        #
-        # resources/blocks/ground/ground.png
-        # =====================================================
+            return path if path.exists() else None
 
         project_path = BASE_DIR / path
-
         if project_path.exists():
             return project_path
 
-        # =====================================================
-        # 3. RESOURCE ROOT
-        #
-        # blocks/ground/ground.png
-        # =====================================================
-
         resource_path = RESOURCES_DIR / path
-
         if resource_path.exists():
             return resource_path
 
-        # =====================================================
-        # 4. ONLY FILE NAME
-        #
-        # ground.png
-        #
-        # Пытаемся найти файл внутри:
-        #
-        # resources/<category>/<resource>/
-        # =====================================================
-
-        category = self.get_category(
-            data
-        )
-
-        resource_name = self.get_resource_name(
-            data
-        )
-
         if category and resource_name:
-
-            candidate = (
-                RESOURCES_DIR
-                / category
-                / resource_name
-                / path
-            )
-
+            candidate = RESOURCES_DIR / category / resource_name / path
             if candidate.exists():
                 return candidate
 
-        # =====================================================
-        # 5. SEARCH BY FILE NAME
-        # =====================================================
-
-        filename = path.name
-
-        if filename:
-
-            try:
-
-                matches = list(
-                    RESOURCES_DIR.rglob(
-                        filename
-                    )
-                )
-
-                if matches:
-
-                    return matches[0]
-
-            except Exception:
-                pass
+        matches = self._resource_index.get(path.name)
+        if matches:
+            return matches[0]
 
         return None
 
     # =========================================================
-    # CREATE NORMAL SPRITE
+    # CREATE SPRITE
     # =========================================================
 
-    def create_sprite_from_editor(
-        self,
-        data: dict
-    ) -> arcade.Sprite | None:
-        """
-        Создаёт Sprite по данным редактора.
-
-        Если текстура меньше 32x32,
-        Sprite автоматически увеличивается
-        минимум до 32 пикселей по каждой стороне
-        с сохранением пропорций.
-        """
-
-        # =====================================================
-        # RESOLVE PATH
-        # =====================================================
-
-        texture_file = self.resolve_texture_path(
-            data
-        )
-
+    def create_sprite_from_editor(self, data: dict) -> arcade.Sprite | None:
+        texture_file = self.resolve_texture_path(data)
         if texture_file is None:
-
-            print(
-                "[Map] Текстура не найдена."
-            )
-
-            print(
-                f"[Map] Данные объекта: {data}"
-            )
-
+            logger.warning("[Map] Текстура не найдена: %s", data)
             return None
 
-        # =====================================================
-        # LOAD TEXTURE
-        # =====================================================
-
-        try:
-
-            texture = arcade.load_texture(
-                str(texture_file)
-            )
-
-        except Exception as error:
-
-            print(
-                f"[Map] Ошибка загрузки текстуры "
-                f"{texture_file}: {error}"
-            )
-
+        texture = self._get_texture(texture_file)
+        if texture is None:
             return None
-
-        # =====================================================
-        # GET TEXTURE SIZE
-        # =====================================================
 
         texture_width = texture.width
         texture_height = texture.height
 
-        # По умолчанию масштаб 1
         scale = 1.0
-
-        # =====================================================
-        # MINIMUM 32x32
-        # =====================================================
-
         if (
-            texture_width < MIN_TEXTURE_SIZE
-            or texture_height < MIN_TEXTURE_SIZE
+            texture_width < self.MIN_TEXTURE_SIZE
+            or texture_height < self.MIN_TEXTURE_SIZE
         ):
-
             scale_x = (
-                MIN_TEXTURE_SIZE
-                / texture_width
-                if texture_width > 0
-                else 1.0
+                self.MIN_TEXTURE_SIZE / texture_width
+                if texture_width > 0 else 1.0
             )
-
             scale_y = (
-                MIN_TEXTURE_SIZE
-                / texture_height
-                if texture_height > 0
-                else 1.0
+                self.MIN_TEXTURE_SIZE / texture_height
+                if texture_height > 0 else 1.0
             )
-
-            # Берём максимальный масштаб,
-            # чтобы обе стороны были не меньше 32.
-            scale = max(
-                scale_x,
-                scale_y
-            )
-
-        # =====================================================
-        # CREATE SPRITE
-        # =====================================================
+            scale = max(scale_x, scale_y)
 
         try:
-
-            # Для Arcade 3.3.3:
-            #
-            # arcade.Sprite(texture, scale=...)
-            #
-            # а не:
-            #
-            # arcade.Sprite(texture=texture, scale=...)
-            #
-            sprite = arcade.Sprite(
-                texture,
-                scale=scale
-            )
-
+            sprite = arcade.Sprite(texture, scale=scale)
         except Exception as error:
-
-            print(
-                f"[Map] Ошибка создания Sprite "
-                f"{texture_file}: {error}"
+            logger.warning(
+                "[Map] Ошибка создания Sprite %s: %s",
+                texture_file, error,
             )
-
             return None
 
-        # =====================================================
-        # POSITION
-        # =====================================================
-
-        x, y = self.get_position(
-            data
-        )
-
-        sprite.center_x = x
-        sprite.center_y = y
-
-        # =====================================================
-        # DEBUG
-        # =====================================================
-
-        if scale != 1.0:
-
-            print(
-                f"[Map] Текстура увеличена: "
-                f"{texture_file.name} "
-                f"{texture_width}x{texture_height}"
-                f" -> "
-                f"{sprite.width:.0f}x{sprite.height:.0f}"
-            )
-
+        sprite.center_x, sprite.center_y = self.get_position(data)
         return sprite
 
     # =========================================================
     # BLOCKS
     # =========================================================
 
-    def create_block_from_editor(
-        self,
-        data: dict
-    ) -> None:
-        """
-        Создаёт блок.
-
-        Все блоки добавляются в walls,
-        поэтому Player может взаимодействовать
-        с ними через PhysicsEngine.
-        """
-
-        sprite = self.create_sprite_from_editor(
-            data
-        )
-
+    def create_block_from_editor(self, data: dict) -> None:
+        sprite = self.create_sprite_from_editor(data)
         if sprite is None:
             return
-
-        self.walls.append(
-            sprite
-        )
+        self.walls.append(sprite)
 
     # =========================================================
     # OBJECTS
     # =========================================================
 
-    def create_object_from_editor(
-        self,
-        data: dict
-    ) -> None:
-        """
-        Создаёт обычный объект.
-
-        Пока объекты не имеют физики.
-        """
-
-        sprite_name = self.get_resource_name(data)
-
-        if sprite_name == 'Coins':
-            sprite = Coin()
-        elif sprite_name == 'Flag':
-            sprite = Flag()
-        else:
+    def create_object_from_editor(self, data: dict) -> None:
+        sprite_name = self.get_resource_name(data).lower()
+        cls = self.OBJECT_REGISTRY.get(sprite_name)
+        if cls is None:
             return
 
-        x, y = self.get_position(data)
-        sprite.center_x = x
-        sprite.center_y = y
-        texture_path = self.get_texture_path(data)
-        sprite.texture = arcade.load_texture(texture_path)
+
+        center_x, center_y = self.get_position(data)
+        sprite = cls(center_x, center_y)
+
+        # Переопределяем текстуру, если указана
+        if self.get_texture_path(data):
+            texture_file = self.resolve_texture_path(data)
+            if texture_file is not None:
+                texture = self._get_texture(texture_file)
+                if texture is not None:
+                    sprite.texture = texture
+
         self.objects.append(sprite)
 
     # =========================================================
     # DECORATIONS
     # =========================================================
 
-    def create_decoration_from_editor(
-        self,
-        data: dict
-    ) -> None:
-        """
-        Создаёт декоративный объект.
-        """
-
-        sprite = self.create_sprite_from_editor(
-            data
-        )
-
+    def create_decoration_from_editor(self, data: dict) -> None:
+        sprite = self.create_sprite_from_editor(data)
         if sprite is None:
             return
-
-        self.decorations.append(
-            sprite
-        )
+        self.decorations.append(sprite)
 
     # =========================================================
     # ENTITIES
     # =========================================================
 
-    def create_entity_from_editor(
-        self,
-        data: dict
-    ) -> None:
-        """
-        Создаёт сущность.
+    def create_entity_from_editor(self, data: dict) -> None:
+        entity_name = self.get_resource_name(data).lower()
+        x, y = self.get_position(data)
 
-        Тип сущности определяется по имени ресурса:
-
-            mario
-            goomba
-            koopa
-        """
-
-        entity_name = (
-            self.get_resource_name(
-                data
-            )
-            .lower()
-        )
-
-        x, y = self.get_position(
-            data
-        )
-
-        print(
-            f"[Map] Entity: "
-            f"{entity_name} "
-            f"at ({x}, {y})"
-        )
-
-        # =====================================================
-        # MARIO
-        # =====================================================
+        logger.debug("[Map] Entity: %s at (%s, %s)", entity_name, x, y)
 
         if entity_name == "mario":
-
-            self.player_spawn = {
-                "x": x,
-                "y": y
-            }
-
-            print(
-                f"[Map] Player spawn установлен: "
-                f"{x}, {y}"
-            )
-
+            self.player_spawn = {"x": x, "y": y}
+            logger.debug("[Map] Player spawn: %s, %s", x, y)
             return
 
-        # =====================================================
-        # GOOMBA
-        # =====================================================
-
-        if entity_name == "goomba":
-
-            enemy = Goomba(
-                x=x,
-                y=y
-            )
-
-            self.enemies.append(
-                enemy
-            )
-
-            self.entities.append(
-                enemy
-            )
-
+        enemy_cls = self.ENEMY_REGISTRY.get(entity_name)
+        if enemy_cls is None:
+            logger.warning("[Map] Неизвестная сущность: %s", entity_name)
             return
 
-        # =====================================================
-        # KOOPA
-        # =====================================================
-
-        if entity_name == "koopa":
-
-            enemy = Koopa(
-                x=x,
-                y=y
-            )
-
-            self.enemies.append(
-                enemy
-            )
-
-            self.entities.append(
-                enemy
-            )
-
-            return
-
-        # =====================================================
-        # UNKNOWN ENTITY
-        # =====================================================
-
-        print(
-            f"[Map] Неизвестная сущность: "
-            f"{entity_name}"
-        )
+        enemy = enemy_cls(x=x, y=y)
+        self.enemies.append(enemy)
+        self.entities.append(enemy)
 
     # =========================================================
     # GETTERS
     # =========================================================
 
-    def get_player_spawn(
-        self
-    ) -> tuple[float, float]:
+    def get_player_spawn(self) -> tuple[float, float]:
+        return self.player_spawn["x"], self.player_spawn["y"]
 
-        return (
-            self.player_spawn["x"],
-            self.player_spawn["y"]
-        )
-
-    # ---------------------------------------------------------
-
-    def get_walls(
-        self
-    ) -> arcade.SpriteList:
-
+    def get_walls(self) -> arcade.SpriteList:
         return self.walls
 
-    # ---------------------------------------------------------
-
-    def get_objects(
-        self
-    ) -> arcade.SpriteList:
-
+    def get_objects(self) -> arcade.SpriteList:
         return self.objects
 
-    # ---------------------------------------------------------
-
-    def get_decorations(
-        self
-    ) -> arcade.SpriteList:
-
+    def get_decorations(self) -> arcade.SpriteList:
         return self.decorations
 
-    # ---------------------------------------------------------
-
-    def get_enemies(
-        self
-    ) -> arcade.SpriteList:
-
+    def get_enemies(self) -> arcade.SpriteList:
         return self.enemies
 
-    # ---------------------------------------------------------
-
-    def get_entities(
-        self
-    ) -> arcade.SpriteList:
-
+    def get_entities(self) -> arcade.SpriteList:
         return self.entities
