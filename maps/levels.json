@@ -1,0 +1,12 @@
+{
+    "levels": [
+        {
+            "id": "1-1",
+            "file": "custom_level.json",
+            "name": "1-1 Классика",
+            "time_limit": 200,
+            "split": "test",
+            "description": "Уровень из редактора: копия первого уровня Super Mario Bros."
+        }
+    ]
+}

@@ -112,10 +112,7 @@ class Koopa(Enemy):
 
         self.center_x = next_x
 
-        hit_list = arcade.check_for_collision_with_list(
-            self,
-            walls
-        )
+        hit_list = self.walls_ahead(walls)
 
         self.center_x = old_x
 

@@ -18,6 +18,17 @@ class Enemy(Entity):
         # Настройка движения
         self.change_x = self.move_direction * self.move_speed
 
+    def walls_ahead(self, walls) -> bool:
+        """Есть ли стена там, где враг окажется после шага.
+
+        Мир игры (core/world.py) подставляет быструю проверку по сетке
+        тайлов в wall_probe; без него — прежняя проверка arcade.
+        """
+        probe = getattr(self, "wall_probe", None)
+        if probe is not None:
+            return probe()
+        return bool(arcade.check_for_collision_with_list(self, walls))
+
     def setup_movement(self, start_x: float) -> None:
         """Настройка начальной позиции для движения"""
         self.start_x = start_x
@@ -55,7 +66,7 @@ class Enemy(Entity):
         old_x = self.center_x
         self.center_x = next_x
 
-        hit_list = arcade.check_for_collision_with_list(self, walls)
+        hit_list = self.walls_ahead(walls)
 
         self.center_x = old_x
 

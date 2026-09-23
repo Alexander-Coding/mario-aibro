@@ -11,5 +11,8 @@ class Coin(arcade.Sprite):
 
     def on_collides_with_player(self, game, player: Player) -> None:
         """Обработка столкновения с игроком"""
-        game.score += 100
+        if hasattr(game, "add_score"):
+            game.add_score(100, "coin")
+        else:
+            game.score += 100
         self.kill()

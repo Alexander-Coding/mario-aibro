@@ -61,9 +61,16 @@ class Map:
     # INIT
     # =========================================================
 
-    def __init__(self, map_file: str):
+    # Индекс файлов ресурсов общий на процесс: обход resources/ на каждую
+    # загрузку карты заметен, когда уровни пересобираются тысячи раз
+    _RESOURCE_INDEX_CACHE: dict[str, list[Path]] | None = None
+
+    def __init__(self, map_file: str | Path | None = None, data: dict | None = None):
+        # Уровень можно передать готовым словарем (генератор уровней)
+        self._data = data
+
         # Путь к карте
-        path = Path(map_file)
+        path = Path(map_file) if map_file is not None else Path("maps/<generated>.json")
         if not path.is_absolute():
             path = BASE_DIR / path
         self.map_file = path
@@ -110,6 +117,9 @@ class Map:
 
     def _build_resource_index(self) -> None:
         """Один раз обходит resources/ и строит индекс по имени файла."""
+        if Map._RESOURCE_INDEX_CACHE is not None:
+            self._resource_index = Map._RESOURCE_INDEX_CACHE
+            return
         if not RESOURCES_DIR.exists():
             return
         for file_path in RESOURCES_DIR.rglob("*"):
@@ -117,6 +127,7 @@ class Map:
                 self._resource_index.setdefault(
                     file_path.name, []
                 ).append(file_path)
+        Map._RESOURCE_INDEX_CACHE = self._resource_index
 
     # =========================================================
     # TEXTURE CACHE
@@ -144,13 +155,16 @@ class Map:
     # =========================================================
 
     def load_map(self) -> None:
-        if not self.map_file.exists():
-            raise FileNotFoundError(
-                f"Файл карты не найден: {self.map_file}"
-            )
+        if self._data is not None:
+            data = self._data
+        else:
+            if not self.map_file.exists():
+                raise FileNotFoundError(
+                    f"Файл карты не найден: {self.map_file}"
+                )
 
-        with open(self.map_file, "r", encoding="utf-8") as file:
-            data = json.load(file)
+            with open(self.map_file, "r", encoding="utf-8") as file:
+                data = json.load(file)
 
         # ---------- MAP SETTINGS ----------
         self.name = data.get("name", "Unnamed Level")
