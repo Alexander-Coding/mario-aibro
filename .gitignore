@@ -4,6 +4,10 @@
 .idea/*
 __pycache__/
 *.pyc
-ai/models/
+ai/models/*
+!ai/models/mariojev_final.pt
 ai/runs/
 records.json
+.venv-cuda/
+tools/_ui_shots/
+tools/_check_ui_tmp/
