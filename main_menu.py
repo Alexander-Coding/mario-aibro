@@ -97,10 +97,11 @@ class Button:
 
 
 class MenuView(arcade.View):
-    def __init__(self, open_editor=None, open_game=None):
+    def __init__(self, open_editor=None, open_game=None, open_levels=None):
         super().__init__()
         self.open_editor = open_editor
         self.open_game = open_game
+        self.open_levels = open_levels
 
         self.mouse_x = 0
         self.mouse_y = 0
@@ -159,14 +160,17 @@ class MenuView(arcade.View):
         self.subtitle.y = height - 210
 
         button_w = min(360, width * 0.4)
-        button_h = 64
+        button_h = 60
 
-        start_y = height / 2 + 20
-        gap = 84
+        # Пять кнопок: ряд плотнее, чем был для четырёх, и начинается
+        # выше — нижняя кнопка не ложится на землю
+        start_y = height / 2 + 70
+        gap = 76
 
         labels = [
             ("ИГРАТЬ", "game"),
             ("ИИ", "ai"),
+            ("УРОВНИ", "levels"),
             ("РЕДАКТОР УРОВНЕЙ", "editor"),
             ("ВЫХОД", "exit"),
         ]
@@ -213,67 +217,15 @@ class MenuView(arcade.View):
 
     def _draw_background(self, width, height):
         """Градиент неба."""
-        steps = 20
-        for i in range(steps):
-            t = i / steps
-            r = int(SKY_TOP[0] * (1 - t) + SKY_BOTTOM[0] * t)
-            g = int(SKY_TOP[1] * (1 - t) + SKY_BOTTOM[1] * t)
-            b = int(SKY_TOP[2] * (1 - t) + SKY_BOTTOM[2] * t)
-
-            y1 = height * (1 - t)
-            y2 = height * (1 - (i + 1) / steps)
-
-            arcade.draw_lrbt_rectangle_filled(
-                0, width, y2, y1,
-                (r, g, b),
-            )
+        draw_sky(width, height)
 
     def _draw_ground(self, width, height):
         """Земля с травой внизу."""
-        ground_h = 90
-        grass_h = 16
-
-        # Земля
-        arcade.draw_lrbt_rectangle_filled(
-            0, width, 0, ground_h,
-            GROUND,
-        )
-        arcade.draw_lrbt_rectangle_filled(
-            0, width, 0, ground_h - 20,
-            GROUND_DARK,
-        )
-
-        # Трава
-        arcade.draw_lrbt_rectangle_filled(
-            0, width, ground_h - grass_h, ground_h,
-            GRASS,
-        )
-        arcade.draw_lrbt_rectangle_filled(
-            0, width, ground_h - grass_h, ground_h - grass_h / 2,
-            GRASS_DARK,
-        )
-
-        # Кирпичики на земле
-        cell = 32
-        for x in range(0, int(width), cell):
-            arcade.draw_lrbt_rectangle_outline(
-                x, x + cell,
-                ground_h - 60, ground_h - 20,
-                GROUND_DARK, 2,
-            )
+        draw_ground(width, height)
 
     def _draw_clouds(self, width, height):
         """Простые облака."""
-        def cloud(cx, cy, s=1.0):
-            arcade.draw_circle_filled(cx, cy, 28 * s, (255, 255, 255, 230))
-            arcade.draw_circle_filled(cx - 26 * s, cy - 6 * s, 20 * s, (255, 255, 255, 230))
-            arcade.draw_circle_filled(cx + 26 * s, cy - 6 * s, 22 * s, (255, 255, 255, 230))
-            arcade.draw_circle_filled(cx - 12 * s, cy + 10 * s, 18 * s, (255, 255, 255, 230))
-            arcade.draw_circle_filled(cx + 14 * s, cy + 12 * s, 16 * s, (255, 255, 255, 230))
-
-        cloud(width * 0.15, height - 260, 1.1)
-        cloud(width * 0.80, height - 320, 0.9)
-        cloud(width * 0.55, height - 180, 0.7)
+        draw_clouds(width, height)
 
     # ========================================================
     # INPUT
@@ -309,6 +261,22 @@ class MenuView(arcade.View):
             else:
                 self.window.show_view(GameView(ai_mode=True))
 
+        elif action == "levels":
+            if self.open_levels is not None:
+                self.open_levels()
+            else:
+                # Импорт здесь: экран уровней сам берёт фон из этого модуля
+                from ui.level_select import LevelSelectView
+
+                def back_to_menu():
+                    self.window.show_view(
+                        MenuView(open_editor=self.open_editor, open_game=self.open_game)
+                    )
+
+                self.window.show_view(
+                    LevelSelectView(open_game=self.open_game, return_to_menu=back_to_menu)
+                )
+
         elif action == "editor":
             if self.open_editor is not None:
                 self.open_editor()
@@ -317,3 +285,75 @@ class MenuView(arcade.View):
 
         elif action == "exit":
             self.window.close()
+
+
+# ============================================================
+# ФОН МЕНЮ (общий для главного меню и экрана «УРОВНИ»)
+# ============================================================
+
+
+def draw_sky(width, height):
+    """Градиент неба."""
+    steps = 20
+    for i in range(steps):
+        t = i / steps
+        r = int(SKY_TOP[0] * (1 - t) + SKY_BOTTOM[0] * t)
+        g = int(SKY_TOP[1] * (1 - t) + SKY_BOTTOM[1] * t)
+        b = int(SKY_TOP[2] * (1 - t) + SKY_BOTTOM[2] * t)
+
+        y1 = height * (1 - t)
+        y2 = height * (1 - (i + 1) / steps)
+
+        arcade.draw_lrbt_rectangle_filled(
+            0, width, y2, y1,
+            (r, g, b),
+        )
+
+
+def draw_ground(width, height):
+    """Земля с травой внизу."""
+    ground_h = 90
+    grass_h = 16
+
+    # Земля
+    arcade.draw_lrbt_rectangle_filled(
+        0, width, 0, ground_h,
+        GROUND,
+    )
+    arcade.draw_lrbt_rectangle_filled(
+        0, width, 0, ground_h - 20,
+        GROUND_DARK,
+    )
+
+    # Трава
+    arcade.draw_lrbt_rectangle_filled(
+        0, width, ground_h - grass_h, ground_h,
+        GRASS,
+    )
+    arcade.draw_lrbt_rectangle_filled(
+        0, width, ground_h - grass_h, ground_h - grass_h / 2,
+        GRASS_DARK,
+    )
+
+    # Кирпичики на земле
+    cell = 32
+    for x in range(0, int(width), cell):
+        arcade.draw_lrbt_rectangle_outline(
+            x, x + cell,
+            ground_h - 60, ground_h - 20,
+            GROUND_DARK, 2,
+        )
+
+
+def draw_clouds(width, height):
+    """Простые облака."""
+    def cloud(cx, cy, s=1.0):
+        arcade.draw_circle_filled(cx, cy, 28 * s, (255, 255, 255, 230))
+        arcade.draw_circle_filled(cx - 26 * s, cy - 6 * s, 20 * s, (255, 255, 255, 230))
+        arcade.draw_circle_filled(cx + 26 * s, cy - 6 * s, 22 * s, (255, 255, 255, 230))
+        arcade.draw_circle_filled(cx - 12 * s, cy + 10 * s, 18 * s, (255, 255, 255, 230))
+        arcade.draw_circle_filled(cx + 14 * s, cy + 12 * s, 16 * s, (255, 255, 255, 230))
+
+    cloud(width * 0.15, height - 260, 1.1)
+    cloud(width * 0.80, height - 320, 0.9)
+    cloud(width * 0.55, height - 180, 0.7)

@@ -1,8 +1,18 @@
 import arcade
-from typing import Optional, Callable
+from typing import Optional, Callable, Sequence
 
-from Entities.player import Player
-from map import Map
+from core.levels import LevelInfo
+from core.world import Inputs
+from records import Records
+from ui import hud
+from ui.session import (
+    ALL_DONE,
+    DEAD,
+    LEVEL_DONE,
+    PLAYING,
+    PlaySession,
+)
+from ui.text import TextPool
 
 
 WINDOW_WIDTH = 1280
@@ -24,6 +34,12 @@ PAUSE_BUTTON = (48, 54, 76)
 PAUSE_BUTTON_HOVER = (86, 128, 255)
 PAUSE_TEXT = (238, 240, 250)
 
+# Клавиши: движение держим, прыжок — нажатие
+KEYS_RIGHT = (arcade.key.RIGHT, arcade.key.D)
+KEYS_LEFT = (arcade.key.LEFT, arcade.key.A)
+KEYS_JUMP = (arcade.key.SPACE, arcade.key.UP, arcade.key.W)
+KEYS_ENTER = (arcade.key.ENTER, arcade.key.RETURN, arcade.key.NUM_ENTER)
+
 
 class PauseButton:
 
@@ -43,7 +59,22 @@ class PauseButton:
 
 
 class GameView(arcade.View):
-    def __init__(self, return_to_menu: Optional[Callable[[], None]] = None, ai_mode: bool = False):
+    """Живая игра: рисует PlaySession и передаёт в него нажатия.
+
+    Вся логика уровня — в core.world.GameWorld (та же, что на обучении
+    нейросети), переходы между уровнями, итоги и рекорды — в
+    ui.session.PlaySession. Здесь только клавиатура, камера, отрисовка и пауза.
+    """
+
+    def __init__(
+        self,
+        return_to_menu: Optional[Callable[[], None]] = None,
+        ai_mode: bool = False,
+        start_index: int = 0,
+        levels: Optional[Sequence[LevelInfo]] = None,
+        records: Optional[Records] = None,
+        session: Optional[PlaySession] = None,
+    ):
         super().__init__()
 
         self.ai_mode = ai_mode
@@ -51,26 +82,31 @@ class GameView(arcade.View):
 
         self.background_color = arcade.color.Color(147, 187, 236)
 
-        # Игровые объекты
-        self.player: Optional[Player] = None
-        self.map: Optional[Map] = None
-
-        self.enemies = arcade.SpriteList()
-        self.walls = arcade.SpriteList()
-        self.objects = arcade.SpriteList()
-        self.decorations = arcade.SpriteList()
-
-        # Физика
-        self.physics_engine: Optional[arcade.PhysicsEnginePlatformer] = None
-        self.enemy_physics_engines = {}
+        # Сеанс: уровни, мир, итоги. Модель ИИ грузим после первого кадра —
+        # иначе окно на секунды замрёт на меню, пока импортируется torch
+        self.session = session or PlaySession(
+            ai_mode=ai_mode,
+            start_index=start_index,
+            levels=levels,
+            records=records,
+            defer_ai=True,
+        )
 
         # Камеры
         self.camera: Optional[arcade.Camera2D] = None
         self.gui_camera: Optional[arcade.Camera2D] = None
 
-        # Состояние игры
-        self.game_over = False
-        self.score = 0
+        # Какой мир сейчас у камеры: сменился уровень — камера прыгает к игроку
+        self._camera_serial = -1
+        self._camera_floor = 0.0
+
+        # Клавиатура: что держим и было ли нажатие прыжка с прошлого кадра
+        self.keys_held: set[int] = set()
+        self._jump_pressed = False
+
+        # Надписи HUD и экранов
+        self.texts = TextPool()
+        self._frames_drawn = 0
 
         # ----------------------------------------------------
         # ПАУЗА
@@ -84,62 +120,51 @@ class GameView(arcade.View):
         self._build_pause_buttons()
 
     # ========================================================
+    # СВОЙСТВА (для совместимости со старым кодом)
+    # ========================================================
+
+    @property
+    def world(self):
+        return self.session.world
+
+    @property
+    def player(self):
+        # Мир пересобирается при перезапуске — игрока берём каждый раз заново
+        return self.session.world.player
+
+    @property
+    def score(self) -> int:
+        return self.session.world.score
+
+    @property
+    def game_over(self) -> bool:
+        return self.session.state == DEAD
+
+    # ========================================================
     # SETUP
     # ========================================================
 
     def setup(self) -> None:
-        """Настройка игры"""
-
-        self.player = Player()
-
-        self.map = Map("maps/custom_level.json")
-        self.walls = self.map.get_walls()
-        self.objects = self.map.get_objects()
-        self.decorations = self.map.get_decorations()
-
-        self.enemies = self.map.get_enemies()
-
-        spawn_x, spawn_y = self.map.get_player_spawn()
-
-        self.player = Player()
-        self.player.center_x = spawn_x
-        self.player.center_y = spawn_y
-
-        self.enemy_physics_engines = {}
-
-        for enemy in self.enemies:
-            self.enemy_physics_engines[enemy] = (
-                arcade.PhysicsEnginePlatformer(
-                    player_sprite=enemy,
-                    walls=self.walls,
-                    gravity_constant=enemy.gravity
-                )
-            )
-
-        self.physics_engine = arcade.PhysicsEnginePlatformer(
-            player_sprite=self.player,
-            walls=self.walls,
-            gravity_constant=self.player.gravity
-        )
+        """Настройка камер и сброс паузы. Уровень держит PlaySession."""
 
         self.camera = arcade.Camera2D()
         self.gui_camera = arcade.Camera2D()
 
-        self.camera.position = (
-            WINDOW_WIDTH / 2,
-            WINDOW_HEIGHT / 2
-        )
+        width, height = self._size()
+        self.gui_camera.position = (width / 2, height / 2)
 
-        self.gui_camera.position = (
-            WINDOW_WIDTH / 2,
-            WINDOW_HEIGHT / 2
-        )
+        self._snap_camera()
 
-        self.game_over = False
-        self.score = 0
+        self.keys_held.clear()
+        self._jump_pressed = False
 
         # Сбрасываем паузу
         self.paused = False
+
+    def _size(self) -> tuple[float, float]:
+        if self.window is not None:
+            return float(self.window.width), float(self.window.height)
+        return float(WINDOW_WIDTH), float(WINDOW_HEIGHT)
 
     # ========================================================
     # PAUSE BUTTONS
@@ -148,9 +173,10 @@ class GameView(arcade.View):
     def _build_pause_buttons(self):
         """Создаёт кнопки оверлея паузы."""
 
-        panel_w, panel_h = 460, 260
-        cx = WINDOW_WIDTH / 2
-        cy = WINDOW_HEIGHT / 2
+        width, height = self._size()
+
+        cx = width / 2
+        cy = height / 2
 
         bw, bh = 260, 56
         gap = 20
@@ -187,8 +213,8 @@ class GameView(arcade.View):
         self.paused = False
         if self.return_to_menu is not None:
             self.return_to_menu()
-        else:
-            self.close()
+        elif self.window is not None:
+            self.window.close()
 
     # ========================================================
     # DRAW
@@ -199,6 +225,10 @@ class GameView(arcade.View):
 
         self.clear()
 
+        session = self.session
+        world = session.world
+        width, height = self._size()
+
         # =====================
         # ИГРОВОЙ МИР
         # =====================
@@ -206,15 +236,17 @@ class GameView(arcade.View):
         if self.camera:
             self.camera.use()
 
-        if self.map:
-            self.walls.draw()
-            self.decorations.draw()
-            self.objects.draw()
+        world.walls.draw()
+        world.decorations.draw()
+        world.objects.draw()
+        world.enemies.draw()
 
-        self.enemies.draw()
+        # Вошёл в замок — игрока не видно
+        player = world.player
+        if player is not None and player.visible:
+            player.playerSprite.draw()
 
-        if self.player:
-            self.player.playerSprite.draw()
+        hud.draw_popups(self.texts, session.popups)
 
         # =====================
         # HUD
@@ -223,62 +255,57 @@ class GameView(arcade.View):
         if self.gui_camera:
             self.gui_camera.use()
 
-        arcade.draw_text(
-            f"Score: {self.score}",
-            10,
-            WINDOW_HEIGHT - 30,
-            arcade.color.WHITE,
-            16
-        )
+        hud.draw_hud(self.texts, session, width, height)
 
-        arcade.draw_text(
-            f"Lives: {self.player.health if self.player else 0}",
-            10,
-            WINDOW_HEIGHT - 55,
-            arcade.color.WHITE,
-            16
-        )
+        # Панель ИИ — пока идёт уровень; на экранах итогов она только мешает
+        if session.ai_active:
+            if session.state == PLAYING:
+                hud.draw_ai_panel(self.texts, session, session.ai_overlay(), width, height)
+        elif session.ai_error:
+            hud.draw_ai_message(self.texts, session.ai_error, width, height)
 
-        if self.game_over:
-            arcade.draw_text(
-                "GAME OVER",
-                WINDOW_WIDTH / 2,
-                WINDOW_HEIGHT / 2 + 30,
-                arcade.color.RED,
-                36,
-                anchor_x="center",
-                anchor_y="center"
-            )
+        if session.state == PLAYING and session.flag_banner is not None:
+            hud.draw_flag_banner(self.texts, session.flag_banner, width, height)
 
-            arcade.draw_text(
-                "Press R to restart",
-                WINDOW_WIDTH / 2,
-                WINDOW_HEIGHT / 2 - 20,
-                arcade.color.WHITE,
-                20,
-                anchor_x="center",
-                anchor_y="center"
-            )
+        # =====================
+        # ЭКРАНЫ ИТОГОВ
+        # =====================
+
+        result = session.last_result
+
+        if session.state == LEVEL_DONE and result is not None:
+            hud.draw_level_result(self.texts, session, result, width, height)
+        elif session.state == DEAD and result is not None:
+            hud.draw_death(self.texts, session, result, width, height)
+        elif session.state == ALL_DONE:
+            hud.draw_all_done(self.texts, session, width, height)
+
+        if session.ai_pending:
+            hud.draw_loading(self.texts, "Загрузка ИИ…", width, height)
 
         # =====================
         # PAUSE OVERLAY
         # =====================
-        if self.paused and not self.game_over:
+        if self.paused and session.state == PLAYING:
             self._draw_pause_overlay()
+
+        self._frames_drawn += 1
 
     def _draw_pause_overlay(self):
         """Отрисовка оверлея паузы."""
 
+        width, height = self._size()
+
         # Затемнение фона
         arcade.draw_lrbt_rectangle_filled(
-            0, WINDOW_WIDTH, 0, WINDOW_HEIGHT,
+            0, width, 0, height,
             PAUSE_OVERLAY,
         )
 
         # Панель
         panel_w, panel_h = 460, 260
-        cx = WINDOW_WIDTH / 2
-        cy = WINDOW_HEIGHT / 2
+        cx = width / 2
+        cy = height / 2
 
         left = cx - panel_w / 2
         right = cx + panel_w / 2
@@ -299,7 +326,8 @@ class GameView(arcade.View):
         )
 
         # Заголовок
-        arcade.draw_text(
+        self.texts.draw(
+            "pause.title",
             "ПАУЗА",
             cx,
             top - 50,
@@ -311,7 +339,7 @@ class GameView(arcade.View):
         )
 
         # Кнопки
-        for btn in self.pause_buttons:
+        for index, btn in enumerate(self.pause_buttons):
             hover = btn.hit(self.mouse_x, self.mouse_y)
             color = PAUSE_BUTTON_HOVER if hover else PAUSE_BUTTON
 
@@ -326,7 +354,8 @@ class GameView(arcade.View):
                 PAUSE_PANEL_OUTLINE, 1,
             )
 
-            arcade.draw_text(
+            self.texts.draw(
+                f"pause.button{index}",
                 btn.label,
                 btn.x + btn.width / 2,
                 btn.y + btn.height / 2,
@@ -344,107 +373,122 @@ class GameView(arcade.View):
     def on_update(self, delta_time: float) -> None:
         """Обновление игры"""
 
-        # Пауза или game over — ничего не обновляем
-        if self.paused or self.game_over or not self.player:
+        session = self.session
+
+        # Модель ИИ грузим, когда на экране уже есть «Загрузка ИИ…»
+        if session.ai_pending:
+            if self._frames_drawn > 0:
+                session.load_ai()
             return
 
-        # =====================
-        # ФИЗИКА
-        # =====================
-        if self.physics_engine:
-            self.physics_engine.update()
+        # Пауза — ничего не обновляем
+        if self.paused:
+            return
 
-        can_jump = False
-        if self.physics_engine:
-            can_jump = self.physics_engine.can_jump()
-
-        # =====================
-        # ИГРОК
-        # =====================
-        self.player.update(can_jump, delta_time)
-        self.player.update_animations(delta_time)
-
-        # =====================
-        # ФИЗИКА ВРАГОВ
-        # =====================
-        for enemy, physics_engine in self.enemy_physics_engines.items():
-            if not enemy.is_alive:
-                continue
-            physics_engine.update()
-
-        # =====================
-        # ВРАГИ
-        # =====================
-        for enemy in list(self.enemies):
-            enemy.update(delta_time, self.walls)
-            enemy.update_animations(delta_time)
-
-        # =====================
-        # СТОЛКНОВЕНИЯ
-        # =====================
-
-        self.player.check_enemy_collides(self.enemies)
-        self.player.check_objects_collides(self, self.objects)
-
-        # =====================
-        # УДАЛЕНИЕ ВРАГОВ
-        # =====================
-        for enemy in list(self.enemies):
-            if not enemy.is_alive:
-                if enemy.death_timer > 0.5:
-                    enemy.remove_from_sprite_lists()
-                    self.score += 100
+        # Мир крутится фиксированным шагом внутри сеанса: сколько шагов
+        # сделать за этот кадр, решает аккумулятор, а не FPS окна
+        session.update(delta_time, self._current_inputs())
+        self._jump_pressed = False
 
         # =====================
         # КАМЕРА
         # =====================
-        self.update_camera(delta_time)
+        if session.world_serial != self._camera_serial:
+            self._snap_camera()
+        else:
+            self.update_camera(delta_time)
 
-        # =====================
-        # ПАДЕНИЕ ВНИЗ
-        # =====================
-        if self.player.center_y < -100:
-            self.player.dead()
-            self.game_over = True
+        # Надписи исчезнувших «+100» больше не нужны
+        if self._frames_drawn % 120 == 0:
+            hud.forget_popups(self.texts, {popup.serial for popup in session.popups})
+
+    def _current_inputs(self) -> Inputs:
+        held = self.keys_held
+        return Inputs(
+            right=any(key in held for key in KEYS_RIGHT),
+            left=any(key in held for key in KEYS_LEFT),
+            jump=self._jump_pressed,
+        )
 
     # ========================================================
     # CAMERA
     # ========================================================
 
+    def _camera_bounds(self) -> tuple[float, float, float]:
+        """Границы центра камеры: не левее начала уровня, не правее конца, не ниже земли."""
+
+        width, height = self._size()
+        geometry = self.session.world.geometry
+
+        min_x = geometry.left + width / 2
+        max_x = max(min_x, geometry.right - width / 2)
+        min_y = self._camera_floor + height / 2
+
+        return min_x, max_x, min_y
+
+    def _snap_camera(self) -> None:
+        """Новый уровень: камера сразу у игрока, без проезда через весь уровень."""
+
+        if not self.camera:
+            return
+
+        world = self.session.world
+        self._camera_serial = self.session.world_serial
+        self._camera_floor = min((wall.bottom for wall in world.walls), default=0.0)
+
+        min_x, max_x, min_y = self._camera_bounds()
+        player = world.player
+
+        x = min(max(player.center_x, min_x), max_x)
+        y = max(player.center_y, min_y)
+
+        self.camera.position = (x, y)
+
     def update_camera(self, delta_time: float) -> None:
         """Плавная камера с dead zone"""
 
-        if not self.player or not self.camera:
+        player = self.session.world.player
+
+        if not player or not self.camera:
             return
+
+        width, height = self._size()
 
         camera_x = self.camera.position.x
         camera_y = self.camera.position.y
 
-        left = camera_x - WINDOW_WIDTH / 2
-        right = camera_x + WINDOW_WIDTH / 2
-        bottom = camera_y - WINDOW_HEIGHT / 2
-        top = camera_y + WINDOW_HEIGHT / 2
+        left = camera_x - width / 2
+        right = camera_x + width / 2
+        bottom = camera_y - height / 2
+        top = camera_y + height / 2
 
-        dead_left = left + CAMERA_DEAD_ZONE_X
-        dead_right = right - CAMERA_DEAD_ZONE_X
-        dead_bottom = bottom + CAMERA_DEAD_ZONE_Y
-        dead_top = top - CAMERA_DEAD_ZONE_Y
+        # На маленьком окне dead zone не должна схлопнуться в ноль
+        dead_zone_x = min(CAMERA_DEAD_ZONE_X, width / 2 - 60)
+        dead_zone_y = min(CAMERA_DEAD_ZONE_Y, height / 2 - 60)
+
+        dead_left = left + dead_zone_x
+        dead_right = right - dead_zone_x
+        dead_bottom = bottom + dead_zone_y
+        dead_top = top - dead_zone_y
 
         target_x = camera_x
         target_y = camera_y
 
-        if self.player.center_x < dead_left:
-            target_x += self.player.center_x - dead_left
-        elif self.player.center_x > dead_right:
-            target_x += self.player.center_x - dead_right
+        # Игрок в замке невидим — камера стоит
+        if player.visible:
+            if player.center_x < dead_left:
+                target_x += player.center_x - dead_left
+            elif player.center_x > dead_right:
+                target_x += player.center_x - dead_right
 
-        if self.player.center_y < dead_bottom:
-            target_y += self.player.center_y - dead_bottom
-        elif self.player.center_y > dead_top:
-            target_y += self.player.center_y - dead_top
+            if player.center_y < dead_bottom:
+                target_y += player.center_y - dead_bottom
+            elif player.center_y > dead_top:
+                target_y += player.center_y - dead_top
 
-        target_x = max(WINDOW_WIDTH / 2, target_x)
-        target_y = max(WINDOW_HEIGHT / 2, target_y)
+        min_x, max_x, min_y = self._camera_bounds()
+        target_x = min(max(target_x, min_x), max_x)
+        target_y = max(target_y, min_y)
 
         speed = min(CAMERA_SPEED * delta_time, 1.0)
 
@@ -452,6 +496,17 @@ class GameView(arcade.View):
         new_y = camera_y + (target_y - camera_y) * speed
 
         self.camera.position = (new_x, new_y)
+
+    def on_resize(self, width: int, height: int) -> None:
+        super().on_resize(width, height)
+
+        if self.camera:
+            self.camera.match_window()
+        if self.gui_camera:
+            self.gui_camera.match_window()
+            self.gui_camera.position = (width / 2, height / 2)
+
+        self._build_pause_buttons()
 
     # ========================================================
     # MOUSE
@@ -475,40 +530,60 @@ class GameView(arcade.View):
 
     def on_key_press(self, symbol: int, modifiers: int) -> None:
 
+        # Движение держим и между экранами: зажатая «вправо» после
+        # перехода на следующий уровень продолжает работать
+        self.keys_held.add(symbol)
+
         # =====================
         # ПАУЗА
         # =====================
         if self.paused:
             if symbol == arcade.key.ESCAPE:
                 self.resume_game()
-            elif symbol == arcade.key.ENTER:
+            elif symbol in KEYS_ENTER:
                 self.resume_game()
             return
 
+        session = self.session
+        state = session.state
+
         # =====================
-        # GAME OVER
+        # ИГРА
         # =====================
-        if self.game_over:
+        if state == PLAYING:
+            if symbol == arcade.key.ESCAPE:
+                self.pause_game()
+            elif symbol in KEYS_JUMP:
+                self._jump_pressed = True
+            elif symbol == arcade.key.R and not session.ai_pending:
+                session.restart_level()
+            return
+
+        # =====================
+        # ИТОГИ УРОВНЯ / СМЕРТЬ
+        # =====================
+        if state in (LEVEL_DONE, DEAD):
+            if symbol in KEYS_ENTER:
+                session.next_level()
+            elif symbol == arcade.key.R:
+                session.restart_level()
+            elif symbol == arcade.key.ESCAPE:
+                self.exit_to_menu()
+            return
+
+        # =====================
+        # ВСЕ УРОВНИ ПОЗАДИ
+        # =====================
+        if state == ALL_DONE:
             if symbol == arcade.key.R:
-                self.setup()
-            return
-
-        if not self.player:
-            return
-
-        if symbol == arcade.key.RIGHT:
-            self.player.move_right()
-        elif symbol == arcade.key.LEFT:
-            self.player.move_left()
-        elif symbol in (arcade.key.SPACE, arcade.key.UP):
-            self.player.jump()
-        elif symbol == arcade.key.ESCAPE:
-            self.pause_game()
+                session.restart_run()
+            elif symbol in KEYS_ENTER or symbol == arcade.key.ESCAPE:
+                self.exit_to_menu()
 
     def on_key_release(self, symbol: int, modifiers: int) -> None:
+        self.keys_held.discard(symbol)
 
-        if not self.player:
-            return
-
-        if symbol in (arcade.key.RIGHT, arcade.key.LEFT):
-            self.player.stop_moving()
+    def on_hide_view(self) -> None:
+        # Окно потеряло вид — отпущенные вне его клавиши не должны «залипнуть»
+        self.keys_held.clear()
+        self._jump_pressed = False

@@ -14,8 +14,11 @@ class HeuristicBot:
     def __init__(self):
         self._cooldown = 0
 
-    def reset(self) -> None:
+    def reset(self, world: GameWorld | None = None) -> None:
         self._cooldown = 0
+
+    def overlay(self) -> None:
+        return None
 
     def act(self, world: GameWorld) -> Inputs:
         player = world.player

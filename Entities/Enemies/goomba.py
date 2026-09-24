@@ -3,7 +3,7 @@ from Entities.enemy import Enemy
 
 class Goomba(Enemy):
     def __init__(self, x: float = 300, y: float = 100):
-        super().__init__("resources/entities/goomba", scale=2)
+        super().__init__("resources/Entities/goomba", scale=2)
 
         self.center_x = x
         self.center_y = y

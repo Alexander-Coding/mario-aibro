@@ -6,7 +6,7 @@ from Entities.entity import Entity
 class Player(Entity):
     def __init__(self):
         super().__init__(
-            "resources/entities/mario",
+            "resources/Entities/mario",
             scale=1.0
         )
 
@@ -135,12 +135,33 @@ class Player(Entity):
         if self.invincible_timer > 0:
             return
 
+        # «Сверху или сбоку» решается по скорости ДО отскока: иначе при
+        # прыжке на двух гумб вплотную первая даёт отскок вверх, и вторая
+        # в том же кадре засчитывается как удар сбоку
+        falling = self.change_y
+        stomped = False
+
         for enemy in enemies:
             if not enemy.is_alive:
                 continue
 
-            if self.collides_with_sprite(enemy):
-                enemy.on_collides_with_player(self)
+            if not self.collides_with_sprite(enemy):
+                continue
+
+            health = self.health
+            self.change_y = falling
+            enemy.on_collides_with_player(self)
+
+            if self.health < health or not self.is_alive:
+                # Удар: отбрасывает от врага, а не всегда влево
+                self.change_x = 5 if self.center_x >= enemy.center_x else -5
+                return
+
+            if self.change_y != falling:
+                stomped = True
+
+        if stomped:
+            self.change_y = self.jump_speed * 0.6
 
     def check_objects_collides(self, game, objects: arcade.SpriteList) -> None:
 

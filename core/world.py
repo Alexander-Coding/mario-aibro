@@ -249,9 +249,10 @@ class TileBody:
         ]
 
     def wall_ahead(self) -> bool:
+        # Enemy.update и Koopa.update уже сдвинули спрайт на шаг вперёд
+        # перед вызовом — проверяем там, где он сейчас
         sprite = self.sprite
-        next_x = sprite.center_x + sprite.move_direction * sprite.move_speed
-        return bool(self._hits_at(next_x, sprite.center_y))
+        return bool(self._hits_at(sprite.center_x, sprite.center_y))
 
     def update(self) -> None:
         sprite = self.sprite
@@ -412,7 +413,9 @@ class GameWorld:
         self.phase = PLAYING
         self.frame = 0
         self.elapsed = 0.0
-        self.time_left = self.time_limit
+        # Таймер — в целых кадрах: float-счёт 1/60 копит ошибку, и на целых
+        # секундах int(198.99999) отнимал 20 очков бонуса
+        self._frames_left = int(round(self.time_limit / rules.FIXED_DT))
         self.score = 0
         self.stats: Counter = Counter()
         self.events: list[Event] = []
@@ -462,8 +465,10 @@ class GameWorld:
         return True
 
     def solid_at(self, tx: int, ty: int) -> bool:
+        # За краями уровня — пустота: у игрока слева от x=0 нет стены,
+        # он там падает в пропасть
         if tx < 0 or ty < 0:
-            return tx < 0  # слева от уровня — стена, внизу — пустота
+            return False
         if tx >= self.tile_grid.shape[0] or ty >= self.tile_grid.shape[1]:
             return False
         return bool(self.tile_grid[tx, ty])
@@ -483,6 +488,10 @@ class GameWorld:
     # ===========================================================
     # СВОЙСТВА
     # ===========================================================
+
+    @property
+    def time_left(self) -> float:
+        return self._frames_left * rules.FIXED_DT
 
     @property
     def done(self) -> bool:
@@ -623,18 +632,29 @@ class GameWorld:
     def _check_time_and_death(self) -> None:
         player = self.player
 
-        self.time_left = max(0.0, self.time_left - rules.FIXED_DT)
+        self._frames_left = max(0, self._frames_left - 1)
 
         if player.center_y < rules.DEATH_Y:
             player.dead()
             self._die("pit")
         elif not player.is_alive:
             self._die("enemy")
-        elif self.time_left <= 0:
+        elif self._frames_left <= 0:
             player.dead()
             self._die("time")
 
+    def _credit_dead_enemies(self) -> None:
+        """Враг растоптан, но спрайт ещё не убран (очки идут через 0.5 с) —
+        если уровень кончился раньше, начисляем сразу: смерть оставляет
+        набранные очки."""
+        for enemy in list(self.enemies):
+            if not enemy.is_alive:
+                enemy.remove_from_sprite_lists()
+                self.enemy_physics_engines.pop(enemy, None)
+                self.add_score(rules.ENEMY_POINTS, "enemy", type=type(enemy).__name__.lower())
+
     def _die(self, cause: str) -> None:
+        self._credit_dead_enemies()
         self.phase = DEAD
         self.death_cause = cause
         self.stats["deaths"] += 1
@@ -675,7 +695,11 @@ class GameWorld:
         player.change_y = 0
         player.set_direction(1)
         player.center_x = pole.x - player.width / 2 + 4
-        player.center_y = max(player.center_y, pole.bottom + player.height / 2)
+        # Перелёт над верхушкой: съезжать начинаем от шара, а не из воздуха
+        player.center_y = min(
+            max(player.center_y, pole.bottom + player.height / 2),
+            pole.top - player.height / 2,
+        )
         player.change_state("climb")
 
     def _step_flagpole(self) -> None:
@@ -725,13 +749,15 @@ class GameWorld:
 
     def _complete(self) -> None:
         player = self.player
+        self._credit_dead_enemies()
 
         player.stop_moving()
         player.change_y = 0
         player.visible = False
 
-        self.time_bonus = int(self.time_left) * rules.TIME_BONUS_PER_SECOND
-        self.add_score(self.time_bonus, "time_bonus", seconds=int(self.time_left))
+        seconds = int(self._frames_left * rules.FIXED_DT + 1e-9)
+        self.time_bonus = seconds * rules.TIME_BONUS_PER_SECOND
+        self.add_score(self.time_bonus, "time_bonus", seconds=seconds)
 
         self.phase = COMPLETE
         self.events.append(Event("complete", 0, {"score": self.score}))
