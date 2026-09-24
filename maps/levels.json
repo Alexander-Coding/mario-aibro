@@ -7,6 +7,46 @@
             "time_limit": 200,
             "split": "test",
             "description": "Уровень из редактора: копия первого уровня Super Mario Bros."
+        },
+        {
+            "id": "warmup",
+            "file": "level_warmup.json",
+            "name": "Разминка",
+            "time_limit": 75,
+            "split": "test",
+            "description": "Учит прыжкам: дорожки монет показывают траекторию. С верхушки лестницы в конце можно схватить флаг за самый верх."
+        },
+        {
+            "id": "goombas",
+            "file": "level_goombas.json",
+            "name": "Коридор гумб",
+            "time_limit": 80,
+            "split": "train",
+            "description": "Группы гумб и koopa — очки за каждого растоптанного. Под крышей безопасный коридор, по крыше — рискованный путь с монетами."
+        },
+        {
+            "id": "pipes",
+            "file": "level_pipes.json",
+            "name": "Трубы и ямы",
+            "time_limit": 85,
+            "split": "train",
+            "description": "Трубы разной высоты, ямы от 2 до 4 тайлов, враги между трубами. Монеты над ямами — тем, кто прыгает с самого края."
+        },
+        {
+            "id": "skybridge",
+            "file": "level_skybridge.json",
+            "name": "Небесный мост",
+            "time_limit": 85,
+            "split": "test",
+            "description": "Длинные пропасти и цепочки парящих платформ. Монеты в воздухе — для тех, кто прыгает точно."
+        },
+        {
+            "id": "treasury",
+            "file": "level_treasury.json",
+            "name": "Сокровищница",
+            "time_limit": 85,
+            "split": "test",
+            "description": "Блоки «?» и монеты над ямами: чем жаднее, тем опаснее. Финал — башня над ямой: прыжок на верх флага за 5000."
         }
     ]
 }
