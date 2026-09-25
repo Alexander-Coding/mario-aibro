@@ -25,7 +25,6 @@ from core import rules
 from core.world import GameWorld, Inputs
 from Entities.Enemies.goomba import Goomba
 from Objects.Coin import Coin
-from Objects.ScoreBlock import ScoreBlock
 
 # Действия в порядке ai.features.ACTIONS и их описания для модели
 CHOICES = {
@@ -35,6 +34,7 @@ CHOICES = {
     "jump": "jump straight up to hit a question block right above",
     "right_jump": "jump forward to the right over a pit, pipe, wall or onto an enemy's head",
     "left_jump": "jump back to the left",
+    "down": "go down into the secret pipe you are standing on",
 }
 CHOICE_INDEX = {name: i for i, name in enumerate(CHOICES)}
 
@@ -84,12 +84,19 @@ def describe(world: GameWorld) -> str:
     for obj in world.objects:
         dx = (obj.center_x - player.center_x) / tile
         dy = (obj.center_y - player.center_y) / tile
-        if not 0 <= dx <= 8:
-            continue
-        if isinstance(obj, Coin):
+        if 0 <= dx <= 8 and isinstance(obj, Coin):
             parts.append(f"A coin is {dx:.0f} tiles ahead and {dy:.0f} tiles up.")
-        elif isinstance(obj, ScoreBlock) and obj.state > 0:
+
+    for block in world.blocks:
+        dx = (block.center_x - player.center_x) / tile
+        dy = (block.center_y - player.center_y) / tile
+        if 0 <= dx <= 8 and block.state > 0:
             parts.append(f"A question block is {dx:.0f} tiles ahead and {dy:.0f} tiles up.")
+
+    if world.warp_under_player() is not None:
+        parts.append("Mario is standing on a secret pipe: pressing down enters a bonus room full of coins.")
+    elif world.in_room:
+        parts.append("Mario is in a secret bonus room; the exit pipe is at the right wall.")
 
     pole = world.geometry.pole
     if pole is not None:
@@ -128,7 +135,8 @@ class LayaController:
         self._action = 0
 
     def act(self, world: GameWorld) -> Inputs:
-        if world.done or world.finishing:
+        if world.done or world.cutscene:
+            self._frame = 0
             return Inputs()
 
         first = self._frame % FRAME_SKIP == 0

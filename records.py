@@ -5,9 +5,14 @@
     {
         "1-1": {
             "human": {"score": 6380, "won": true, "date": "2026-09-23T21:04:11"},
-            "ai":    {"score": 7120, "won": true, "date": "2026-09-23T21:10:52"}
+            "ai":    {"score": 7120, "won": true, "date": "2026-09-23T21:10:52",
+                      "details": {"coins": 12, "coins_total": 20, "secrets": 1, "secrets_total": 1}}
         }
     }
+
+"details" — что собрано из возможного в забеге-рекорде (монеты, удары по
+блокам «?», враги, тайники; ключи как в GameWorld.summary()). Поле
+необязательное: старые записи без него читаются как раньше.
 
 Запись обновляется в конце каждого уровня — и после победы, и после
 смерти. Хранится лучший счёт: побеждает не тот, кто прошёл, а тот, кто
@@ -77,8 +82,12 @@ class Records:
                             "won": bool(record.get("won", False)),
                             "date": str(record.get("date", "")),
                         }
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError, OverflowError):
+                        # OverflowError — Infinity в файле: int(float("inf"))
                         continue
+                    details = _clean_details(record.get("details"))
+                    if details:
+                        clean[who]["details"] = details
 
             if clean:
                 data[str(level_id)] = clean
@@ -121,10 +130,13 @@ class Records:
         score: int,
         won: bool,
         date: Optional[str] = None,
+        details: Optional[dict] = None,
     ) -> bool:
         """Сохраняет результат, если он лучше прежнего. True — рекорд обновлён.
 
         Лучше — больше очков; при равенстве очков победа лучше смерти.
+        details — что собрано из возможного ({"coins": 12, "coins_total": 20, ...}),
+        пишется вместе с рекордом.
         """
 
         if who not in PLAYERS:
@@ -143,11 +155,16 @@ class Records:
         if not better:
             return False
 
-        self.data.setdefault(str(level_id), {})[who] = {
+        record = {
             "score": score,
             "won": won,
             "date": date or datetime.now().isoformat(timespec="seconds"),
         }
+        details = _clean_details(details)
+        if details:
+            record["details"] = details
+
+        self.data.setdefault(str(level_id), {})[who] = record
         self.save()
         return True
 
@@ -169,6 +186,23 @@ class Records:
                 tmp_path.unlink()
             except OSError:
                 pass
+
+
+def _clean_details(details) -> dict:
+    """Только целые числа по строковым ключам — остальное молча отбрасывается."""
+
+    if not isinstance(details, dict):
+        return {}
+
+    clean = {}
+    for key, value in details.items():
+        if isinstance(value, bool):
+            continue
+        try:
+            clean[str(key)] = int(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return clean
 
 
 def compare_scores(human: Optional[int], ai: Optional[int]) -> Optional[str]:

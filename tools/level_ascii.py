@@ -11,7 +11,12 @@
     o  монета                     g  goomba          k  koopa
     M  старт игрока               |  шток            *  шар на штоке
     F  флаг                       C  замок           .  пусто
+    >  устье боковой трубы выхода из секретной комнаты
 С --detail твёрдые блоки различаются: = земля, B кирпич, X камень лестницы.
+
+Секретные комнаты (ключ "warps") рисуются под уровнем, каждая своей
+картинкой в своих координатах; над ней — куда ведёт труба-вход и откуда
+игрок вылезет.
 """
 
 from __future__ import annotations
@@ -35,6 +40,14 @@ CHARS = {
     "tube_top_r": "T",
     "tube_l": "T",
     "tube_r": "T",
+    "side_mouth": ">",
+    "side_mouth_top": ">",
+    "side_body": "T",
+    "side_body_top": "T",
+    "side_joint_bl": "T",
+    "side_joint_br": "T",
+    "side_joint_tl": "T",
+    "side_joint_tr": "T",
     "question": "?",
     "coin": "o",
     "flag": "F",
@@ -124,6 +137,19 @@ def render(level: LevelSource, width: int = 120, detail: bool = False,
         for ty in range(max_ty, min_ty - 1, -1):
             row = "".join(chars.get((tx, ty), ".") for tx in range(start, stop))
             lines.append(f"{ty:>3} {row}")
+
+    for index, warp in enumerate(data.get("warps") or []):
+        room = warp.get("room") or {}
+        key = warp.get("id") or f"room{index + 1}"
+        pipe, out = warp.get("pipe") or (0, 0), warp.get("exit") or (0, 0)
+        lines.append("")
+        lines.append(
+            f"Комната {key} ({room.get('theme', 'underground')}): вход — труба "
+            f"({int(pipe[0] // 32)},{int(pipe[1] // 32)}), выход — труба "
+            f"({int(out[0] // 32)},{int(out[1] // 32)})"
+        )
+        lines.append(render(dict(room, name=f"комната {key}"), width=width,
+                            detail=detail, legend=False))
 
     if legend:
         lines.append("")

@@ -13,12 +13,22 @@
 Система координат — как у редактора и GameWorld: тайл 32×32, центр блока
 на (32*tx + 16, 32*ty + 16), ось Y вверх. Земля уровня 1-1 — ряды ty 4 и 5
 (верх земли на y = 192), игрок и враги стоят в ряду ty 6 (центр y = 208).
+
+Блок «?» твёрдый, как кирпич (core/world.py кладёт его в walls): на нём
+стоят, сквозь него не пройти, прыжок под ним обрывается. Выбить его можно
+только снизу, стоя на полу, над которым низ блока на 3–4 тайла.
+
+Секретные комнаты («warps» в JSON уровня) собирает RoomBuilder: закрытая
+коробка с полом, стенами и потолком, точка появления наверху слева,
+боковая труба выхода справа на уровне пола. LevelBuilder.warp() связывает
+трубу-вход уровня, комнату и трубу, из которой игрок вылезет дальше.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional, Union
@@ -78,6 +88,16 @@ KINDS: dict[str, tuple[str, str, str]] = {
     "tube_top_r": ("Blocks", "Tubes", "resources/Blocks/Tubes/img_1.png"),
     "tube_l": ("Blocks", "Tubes", "resources/Blocks/Tubes/img_2.png"),
     "tube_r": ("Blocks", "Tubes", "resources/Blocks/Tubes/img_3.png"),
+    # Боковая труба выхода из комнаты: устье (2 тайла), горизонтальное
+    # тело (2 тайла) и стык 2×2 с вертикальной трубой, уходящей в потолок
+    "side_mouth": ("Blocks", "Tubes", "resources/Blocks/Tubes/img_10.png"),
+    "side_mouth_top": ("Blocks", "Tubes", "resources/Blocks/Tubes/img_11.png"),
+    "side_body": ("Blocks", "Tubes", "resources/Blocks/Tubes/img_9.png"),
+    "side_body_top": ("Blocks", "Tubes", "resources/Blocks/Tubes/img_8.png"),
+    "side_joint_bl": ("Blocks", "Tubes", "resources/Blocks/Tubes/img_7.png"),
+    "side_joint_br": ("Blocks", "Tubes", "resources/Blocks/Tubes/img_6.png"),
+    "side_joint_tl": ("Blocks", "Tubes", "resources/Blocks/Tubes/img_5.png"),
+    "side_joint_tr": ("Blocks", "Tubes", "resources/Blocks/Tubes/img_4.png"),
     # Объекты (не твёрдые)
     "question": ("objects", "ScoreBlock", "resources/objects/ScoreBlock/img_4.png"),
     "coin": ("objects", "Coins", "resources/objects/Coins/img.png"),
@@ -95,7 +115,15 @@ KINDS: dict[str, tuple[str, str, str]] = {
 for _name in ("img.png", "img_1.png", "img_2.png", "img_3.png", "img_4.png", "img_5.png", "img_6.png"):
     KINDS[f"castle:{_name}"] = ("decorations", "Castle", f"resources/decorations/Castle/{_name}")
 
-SOLID_KINDS = {"ground", "brick", "hard", "stone", "tube_top_l", "tube_top_r", "tube_l", "tube_r", "block"}
+SIDE_PIPE_KINDS = {
+    "side_mouth", "side_mouth_top", "side_body", "side_body_top",
+    "side_joint_bl", "side_joint_br", "side_joint_tl", "side_joint_tr",
+}
+# Блок «?» — твёрдый: об него бьётся и игрок, и враги
+SOLID_KINDS = {
+    "ground", "brick", "hard", "stone", "tube_top_l", "tube_top_r", "tube_l", "tube_r",
+    "block", "question",
+} | SIDE_PIPE_KINDS
 ENEMY_KINDS = {"goomba", "koopa"}
 
 
@@ -125,6 +153,14 @@ def classify(item: dict) -> str:
                 "img_1.png": "tube_top_r",
                 "img_2.png": "tube_l",
                 "img_3.png": "tube_r",
+                "img_4.png": "side_joint_tr",
+                "img_5.png": "side_joint_tl",
+                "img_6.png": "side_joint_br",
+                "img_7.png": "side_joint_bl",
+                "img_8.png": "side_body_top",
+                "img_9.png": "side_body",
+                "img_10.png": "side_mouth",
+                "img_11.png": "side_mouth_top",
             }.get(texture, "block")
         return "block"
 
@@ -154,6 +190,14 @@ def classify(item: dict) -> str:
 
 def is_solid(kind: str) -> bool:
     return kind in SOLID_KINDS
+
+
+def block_hits(x: float, y: float) -> int:
+    """Число ударов в блоке «?» — та же формула, что в Objects/ScoreBlock.py.
+
+    Детерминировано позицией центра блока (в комнате — в её координатах).
+    """
+    return random.Random(f"{float(x):.1f}:{float(y):.1f}").randint(1, 4)
 
 
 # ===============================================================
@@ -209,17 +253,43 @@ def solid_tiles(data: dict) -> set[tuple[int, int]]:
     return {(c.tx, c.ty) for c in level_cells(data) if is_solid(c.kind)}
 
 
-def time_limit_for(run_tiles: float) -> int:
-    """Лимит времени уровня по длине пробега от старта до двери замка.
+# Оценка «тщательного» прохождения: сколько стоит выбить блок «?» (подойти,
+# прыгнуть, приземлиться — ~1.2 с на удар) и взять монету в стороне от пути.
+# Это оценка, не замер: врагов в ней нет, повторный удар по тому же блоку
+# на деле ~0.35 с, а монеты в воздухе берутся отдельными прыжками (~1 с на
+# 2–3 монеты). Ручные уровни берут лимит по большему из формулы и замера
+# (tools/level_build.measured_seconds, tools.level_check --thorough)
+SECONDS_PER_BLOCK_HIT = 1.2
+SECONDS_PER_COIN = 0.2
+# Запас лимита над тщательным прохождением: не меньше 30 %
+THOROUGH_MARGIN = 1.3
+
+
+def thorough_seconds(run_tiles: float, block_hits_total: int = 0, coins_total: int = 0,
+                     extra_seconds: float = 0.0) -> float:
+    """Время тщательного прохождения: весь путь на 4 px/кадр, все удары по
+    блокам «?», монеты в стороне и extra_seconds (комнаты). Заставки труб и
+    флага таймер не тратят."""
+
+    return (run_tiles * TILE / RUN_SPEED / FPS
+            + SECONDS_PER_BLOCK_HIT * block_hits_total
+            + SECONDS_PER_COIN * coins_total
+            + extra_seconds)
+
+
+def time_limit_for(run_tiles: float, thorough: float = 0.0) -> int:
+    """Лимит времени уровня: пробег от старта до двери и тщательное прохождение.
 
     Минимум — пробег на полной скорости (4 px/кадр); лимит — вдвое больше
-    плюс 30 с запаса, округлённо до 5 с. Игрок, прошедший уровень в
-    полтора раза медленнее минимума, получает за время ~800–1100 очков:
-    ощутимо, но меньше флага (5000) и меньше монет на уровне.
+    плюс 30 с запаса, но не меньше тщательного прохождения (все блоки «?»,
+    монеты, комната) с запасом 30 %; округлённо вверх до 5 с. Бонус за
+    время (20 за секунду) не перевешивает блок «?»: удар стоит 100 очков,
+    а тратит ~1.2 с — 24 очка бонуса.
     """
 
     run_seconds = run_tiles * TILE / RUN_SPEED / FPS
-    return int(5 * math.ceil((2.0 * run_seconds + 30.0) / 5))
+    need = max(2.0 * run_seconds + 30.0, THOROUGH_MARGIN * thorough)
+    return int(5 * math.ceil(need / 5))
 
 
 # ===============================================================
@@ -263,6 +333,8 @@ class LevelBuilder:
     spawn: Optional[tuple[int, int]] = None
     pole_tx: Optional[int] = None
     time_limit: Optional[int] = None
+    # Секретные комнаты: готовые записи "warps" (см. warp())
+    warps: list[dict] = field(default_factory=list)
 
     # -----------------------------------------------------------
     # БАЗОВЫЕ ОПЕРАЦИИ
@@ -291,15 +363,26 @@ class LevelBuilder:
         return kind is not None and is_solid(kind)
 
     def surface(self, tx: int) -> Optional[int]:
-        """Ряд, в котором стоит игрок над столбцом tx (верхний твёрдый + 1).
+        """Ряд, в котором стоит игрок над столбцом tx.
 
-        Считается от земли: ищем самый верхний твёрдый блок столбца, над
-        которым свободно. None — в столбце нет опоры (яма).
+        Считается от низа: берём самый нижний твёрдый блок столбца (землю
+        или платформу над ямой) и поднимаемся, пока над ним твёрдое, —
+        труба, лестница, стол. Висящие выше ряды кирпичей и блоков «?»
+        опорой не считаются: враг и старт встают на землю под ними.
+        None — в столбце нет опоры (яма).
         """
-        rows = sorted(ty for (x, ty), kind in self.cells.items() if x == tx and is_solid(kind))
+        rows = {ty for (x, ty), kind in self.cells.items() if x == tx and is_solid(kind)}
         if not rows:
             return None
-        return rows[-1] + 1
+        ty = min(rows)
+        while ty + 1 in rows:
+            ty += 1
+        return ty + 1
+
+    def floor_below(self, tx: int, ty: int) -> Optional[int]:
+        """Ряд, где стоит игрок под клеткой (tx, ty): верхний твёрдый ниже + 1."""
+        rows = [r for (x, r), kind in self.cells.items() if x == tx and r < ty and is_solid(kind)]
+        return max(rows) + 1 if rows else None
 
     # -----------------------------------------------------------
     # РЕЛЬЕФ
@@ -372,6 +455,33 @@ class LevelBuilder:
     def question(self, tx: int, ty: int) -> "LevelBuilder":
         return self.put("question", tx, ty)
 
+    def blocks(self, tx: int, ty: int, pattern: str) -> "LevelBuilder":
+        """Ряд блоков по шаблону слева направо: «?» — блок «?», «B» —
+        кирпич, «X» — камень, «o» — монета, «.» — пропуск.
+
+        Блок «?» твёрдый: ряд над землёй ставят на 3–4 тайла выше пола
+        (ty = STAND_TY + 3 или + 4), не над ямой и не над разбегом прыжка.
+        """
+        kinds = {"?": "question", "B": "brick", "X": "hard", "o": "coin"}
+        for i, char in enumerate(pattern):
+            if char in kinds:
+                self.put(kinds[char], tx + i, ty, replace=char != "o")
+        return self
+
+    def enemy_pen(self, tx0: int, tx1: int, ty: int, kind: str = "goomba",
+                  at: Optional[Iterable[int]] = None) -> "LevelBuilder":
+        """Враги на ряду блоков tx0..tx1 (ряд ty — сами блоки), с бортиками
+        из кирпича по краям, чтобы не сошли вниз до прихода игрока.
+
+        Бортики — в ряду ty+1 над крайними блоками; враги ходят между ними.
+        Удар снизу по блоку под врагом убивает его (+100), как в SMB.
+        """
+        self.put("brick", tx0, ty + 1)
+        self.put("brick", tx1, ty + 1)
+        for tx in (at if at is not None else (tx0 + 1 + (tx1 - tx0 - 2) // 2,)):
+            self.put(kind, tx, ty + 1)
+        return self
+
     def coin_arc(self, tx0: int, tx1: int, base: int, peak: int) -> "LevelBuilder":
         """Монеты по параболе от (tx0, base) до (tx1, base) с вершиной base+peak.
 
@@ -442,6 +552,31 @@ class LevelBuilder:
         return self
 
     # -----------------------------------------------------------
+    # СЕКРЕТНЫЕ КОМНАТЫ
+    # -----------------------------------------------------------
+
+    def pipe_top(self, tx: int) -> int:
+        """Ряд верхнего тайла трубы, левая половина которой в столбце tx."""
+        rows = [ty for (x, ty), kind in self.cells.items() if x == tx and kind == "tube_top_l"]
+        if not rows:
+            raise ValueError(f"В столбце {tx} нет трубы")
+        return max(rows)
+
+    def warp(self, pipe_tx: int, exit_tx: int, room: "RoomBuilder",
+             key: Optional[str] = None) -> "LevelBuilder":
+        """Труба-вход (левый столбец pipe_tx) → комната → труба-выход exit_tx.
+
+        Обе трубы уже поставлены tube(). Над трубой-выходом должно быть
+        2+ тайла свободно, за ней — земля без врагов рядом (проверяет
+        tools/level_check.py и прогоном в GameWorld).
+        """
+        self.warps.append(warp_entry(
+            (pipe_tx, self.pipe_top(pipe_tx)), (exit_tx, self.pipe_top(exit_tx)), room,
+            key or f"room{len(self.warps) + 1}",
+        ))
+        return self
+
+    # -----------------------------------------------------------
     # ФИНИШ
     # -----------------------------------------------------------
 
@@ -502,10 +637,23 @@ class LevelBuilder:
         door_x = self.pole_tx * TILE + HALF + DOOR_OFFSET_PX
         return (door_x - center(self.spawn[0])) / TILE
 
-    def to_level(self) -> dict:
-        """Словарь уровня в формате редактора (+ name, description, time_limit)."""
+    def block_hits_total(self) -> int:
+        return sum(block_hits(center(tx), center(ty))
+                   for (tx, ty), kind in self.cells.items() if kind == "question")
+
+    def coins_total(self) -> int:
+        return sum(kind == "coin" for kind in self.cells.values())
+
+    def thorough_seconds(self) -> float:
+        """Тщательное прохождение: весь путь, все удары, монеты, комнаты."""
+        rooms = sum(float(w.get("_seconds", 0.0)) for w in self.warps)
+        return thorough_seconds(self.run_tiles(), self.block_hits_total(),
+                                self.coins_total(), rooms)
+
+    def objects(self) -> list[dict]:
+        """Объекты в формате редактора, старт — сущностью mario."""
         if self.spawn is None:
-            raise ValueError("У уровня нет точки старта")
+            raise ValueError("Нет точки старта")
 
         objects = []
         cells = dict(self.cells)
@@ -524,14 +672,121 @@ class LevelBuilder:
                 "resource": resource,
                 "texture_path": texture,
             })
+        return objects
 
+    def to_level(self) -> dict:
+        """Словарь уровня в формате редактора (+ name, description, time_limit, warps)."""
+        if self.spawn is None:
+            raise ValueError("У уровня нет точки старта")
+
+        # По умолчанию — лимит по пробегу (ai/levelgen.py добавляет к нему
+        # своё время на сбор); ручные уровни (tools/level_build.py) ставят
+        # time_limit сами — по тщательному прохождению, см. thorough_seconds()
         time_limit = self.time_limit or time_limit_for(self.run_tiles())
-        return {
+        level = {
             "name": self.name,
             "description": self.description,
             "time_limit": time_limit,
-            "objects": objects,
+            "objects": self.objects(),
         }
+        if self.warps:
+            level["warps"] = [{k: v for k, v in w.items() if not k.startswith("_")}
+                              for w in self.warps]
+        return level
+
+
+# ===============================================================
+# СЕКРЕТНАЯ КОМНАТА
+# ===============================================================
+
+# Ряды комнаты: пол — ty 0–1, игрок стоит в ряду 2
+ROOM_FLOOR_TY = 1
+ROOM_STAND_TY = ROOM_FLOOR_TY + 1
+
+
+@dataclass
+class RoomBuilder(LevelBuilder):
+    """Секретная комната: закрытая коробка в своих координатах (от 0).
+
+    box() ставит пол (ряды 0–1), стены и потолок; side_exit() — боковую
+    трубу выхода у правой стены: устье на уровне пола, за ним тело и стык
+    с вертикальной трубой до потолка. Точка появления — наверху слева:
+    игрок падает в комнату, как в Super Mario Bros.
+
+        room = RoomBuilder("монеты").box(20, 12).start(2, 9)
+        room.coins(4, 10, 5)
+        room.side_exit()
+    """
+
+    theme: str = "underground"
+    width: int = 0
+    height: int = 0
+    exit_tile: Optional[tuple[int, int]] = None
+
+    def box(self, width: int, height: int = 12, wall: str = "brick",
+            floor: str = "ground") -> "RoomBuilder":
+        """Коробка width×height тайлов: пол в два ряда, стены, потолок."""
+        self.width, self.height = width, height
+        for tx in range(width):
+            for ty in range(ROOM_FLOOR_TY + 1):
+                self.put(floor, tx, ty)
+            self.put(wall, tx, height - 1)
+        for ty in range(ROOM_STAND_TY, height - 1):
+            self.put(wall, 0, ty)
+            self.put(wall, width - 1, ty)
+        return self
+
+    def side_exit(self) -> "RoomBuilder":
+        """Боковая труба у правой стены: устье (2 тайла) на полу, тело,
+        стык 2×2 и вертикальная труба до потолка. Выход — упереться в устье."""
+        mouth = self.width - 5
+        base = ROOM_STAND_TY
+        self.put("side_mouth", mouth, base)
+        self.put("side_mouth_top", mouth, base + 1)
+        self.put("side_body", mouth + 1, base)
+        self.put("side_body_top", mouth + 1, base + 1)
+        self.put("side_joint_bl", mouth + 2, base)
+        self.put("side_joint_br", mouth + 3, base)
+        self.put("side_joint_tl", mouth + 2, base + 1)
+        self.put("side_joint_tr", mouth + 3, base + 1)
+        for ty in range(base + 2, self.height - 1):
+            self.put("tube_l", mouth + 2, ty)
+            self.put("tube_r", mouth + 3, ty)
+        self.exit_tile = (mouth, base)
+        return self
+
+    def run_tiles(self) -> float:
+        """Путь по комнате: от точки появления до устья."""
+        if self.spawn is None or self.exit_tile is None:
+            return float(self.width)
+        return float(abs(self.exit_tile[0] - self.spawn[0]))
+
+    def seconds(self) -> float:
+        """Время тщательного прохода комнаты (таймер в трубах стоит)."""
+        return thorough_seconds(self.run_tiles(), self.block_hits_total(),
+                                self.coins_total(), extra_seconds=1.0)
+
+    def to_room(self) -> dict:
+        if self.exit_tile is None:
+            raise ValueError("В комнате нет выхода: side_exit()")
+        return {
+            "theme": self.theme,
+            "objects": self.objects(),
+            "exit": [center(self.exit_tile[0]), center(self.exit_tile[1])],
+        }
+
+
+def warp_entry(pipe: tuple[int, int], exit_pipe: tuple[int, int], room: RoomBuilder,
+               key: str) -> dict:
+    """Запись "warps" уровня: pipe и exit — (столбец, ряд) левого верхнего
+    тайла труб. Поле _seconds (оценка времени комнаты) в JSON не пишется."""
+    return {
+        "id": key,
+        "pipe": [center(pipe[0]), center(pipe[1])],
+        "exit": [center(exit_pipe[0]), center(exit_pipe[1])],
+        "room": room.to_room(),
+        "_seconds": round(room.seconds(), 1),
+    }
 
 
 def iter_kinds(data: dict, kinds: Iterable[str]) -> list[Cell]:

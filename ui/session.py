@@ -7,7 +7,7 @@ rules.FIXED_DT через аккумулятор и решает, какой э�
 а GameView (game.py) только рисует его состояние и передаёт нажатия.
 
     session = PlaySession(ai_mode=False)
-    session.update(delta_time, Inputs(right=True, jump=space_pressed))
+    session.update(delta_time, Inputs(right=True, jump=space_pressed, down=down_held))
     if session.state == LEVEL_DONE:
         session.next_level()
 """
@@ -21,7 +21,8 @@ from typing import Any, Callable, Optional, Sequence, Union
 from core import levels as core_levels
 from core import rules
 from core.levels import LevelInfo
-from core.world import GameWorld, Inputs, Event
+from core.world import PLAYING as WORLD_PLAYING
+from core.world import Event, GameWorld, Inputs
 from records import AI, HUMAN, Records
 from ui import ai_control
 
@@ -52,6 +53,30 @@ POPUP_LIFETIME_BIG = 1.6
 # Сколько секунд висит крупная надпись о захвате флага
 FLAG_BANNER_TIME = 3.0
 
+# Надпись «Секретная комната!» при первом входе в комнату
+SECRET_BANNER_TIME = 2.4
+
+# Монета, выбитая из блока «?»: взлетает и падает обратно за это время.
+# Высота над центром блока — START + SPEED·t − FALL·t² (t = 0..1): от
+# верхнего края блока (16 px) вверх до пика ≈ 67 px при t ≈ 0.68 и
+# обратно вниз до 56 px
+BLOCK_COIN_TIME = 0.55
+BLOCK_COIN_START = 16.0
+BLOCK_COIN_SPEED = 150.0
+BLOCK_COIN_FALL = 110.0
+BLOCK_COIN_PEAK = BLOCK_COIN_START + BLOCK_COIN_SPEED ** 2 / (4 * BLOCK_COIN_FALL)
+
+# «+100» за удар по «?» — над пиком монеты, а не на её пути: монета 32 px
+# (верх на пике ≈ 83 px над центром блока), надпись 15 pt — ≈ 10 px вниз
+# от своего центра, и ещё зазор
+BLOCK_POPUP_Y = round(BLOCK_COIN_PEAK) + 16 + 10 + 10
+
+# Блок «?» подпрыгивает от удара снизу
+BUMP_TIME = 0.16
+
+# Очки за врага от этой суммы (цепочка прыжков) — крупной надписью
+BIG_POPUP_POINTS = 1000
+
 # Погрешность сравнения аккумулятора с шагом: 1/60 + 1/60 в числах
 # с плавающей точкой не всегда ровно 2/60, и без запаса кадр с dt = 1/60
 # иногда делал бы 0 шагов, а следующий — 2.
@@ -69,6 +94,8 @@ POPUP_COLORS = {
     "coin": (255, 214, 64),
     "block": (255, 168, 72),
     "enemy": (250, 250, 250),
+    "stomp": (250, 250, 250),
+    "chain": (255, 214, 64),
     "flag": (120, 240, 120),
     "time_bonus": (110, 220, 255),
     "hit": (255, 90, 90),
@@ -122,6 +149,61 @@ class FlagBanner:
 
 
 @dataclass
+class Banner:
+    """Крупная надпись по центру экрана: «СЕКРЕТНАЯ КОМНАТА!» и пояснение."""
+
+    title: str
+    subtitle: str = ""
+    kind: str = ""
+    lifetime: float = SECRET_BANNER_TIME
+    age: float = 0.0
+
+    @property
+    def alive(self) -> bool:
+        return self.age < self.lifetime
+
+
+@dataclass
+class BlockCoin:
+    """Монета, выскочившая из блока «?» (мировые координаты центра блока)."""
+
+    x: float
+    y: float
+    age: float = 0.0
+
+    @property
+    def alive(self) -> bool:
+        return self.age < BLOCK_COIN_TIME
+
+    @property
+    def progress(self) -> float:
+        return min(self.age / BLOCK_COIN_TIME, 1.0)
+
+    @property
+    def height(self) -> float:
+        """Насколько монета выше центра блока: от верха блока до ≈ 2 тайлов и чуть вниз."""
+        t = self.progress
+        return BLOCK_COIN_START + BLOCK_COIN_SPEED * t - BLOCK_COIN_FALL * t * t
+
+
+@dataclass
+class Bump:
+    """Блок «?» подпрыгнул от удара головой: смещение по Y рисует GameView."""
+
+    block: Any
+    age: float = 0.0
+
+    @property
+    def alive(self) -> bool:
+        return self.age < BUMP_TIME
+
+    @property
+    def offset(self) -> float:
+        t = min(self.age / BUMP_TIME, 1.0)
+        return 10.0 * 4 * t * (1 - t)
+
+
+@dataclass
 class LevelResult:
     """Итог одного уровня для экрана итогов и итоговой таблицы."""
 
@@ -152,18 +234,39 @@ class LevelResult:
         return DEATH_CAUSES.get(self.death or "", "")
 
 
+# Что из summary() показывают итоги и хранят рекорды: собрано / всего
+COLLECTED_KEYS = (
+    "coins", "coins_total",
+    "blocks", "block_hits_total",
+    "enemies", "enemies_total",
+    "secrets", "secrets_total",
+)
+
+
 def level_breakdown(world: GameWorld) -> dict:
-    """Из чего сложились очки уровня: блоки, монеты, враги, флаг, время."""
+    """Из чего сложились очки уровня: блоки, монеты, враги, флаг, время.
+
+    Враги — вместе с прыжками по Koopa в панцирь (событие "stomp"): иначе
+    строки итогов не сходились бы с суммой. Рядом — сколько всего было на
+    уровне вместе с секретными комнатами.
+    """
 
     stats = world.stats
+    totals = getattr(world, "totals", {}) or {}
 
     return {
         "blocks": int(stats["block"]),
         "block_points": int(stats["block_points"]),
+        "blocks_total": int(totals.get("block_hits", 0)),
         "coins": int(stats["coin"]),
         "coin_points": int(stats["coin_points"]),
+        "coins_total": int(totals.get("coins", 0)),
         "enemies": int(stats["enemy"]),
-        "enemy_points": int(stats["enemy_points"]),
+        "enemy_points": int(stats["enemy_points"]) + int(stats["stomp_points"]),
+        "enemies_total": int(totals.get("enemies", 0)),
+        "stomps": int(stats["stomp"]),
+        "secrets": len(getattr(world, "rooms_visited", ()) or ()),
+        "secrets_total": int(totals.get("secrets", 0)),
         "flag_fraction": world.flag_fraction,
         "flag_points": int(world.flag_bonus),
         "time_seconds": int(world.time_left) if world.won else 0,
@@ -329,8 +432,7 @@ class PlaySession:
         self._accumulator = 0.0
         self._jump_pending = False
 
-        self.popups: list[Popup] = []
-        self.flag_banner: Optional[FlagBanner] = None
+        self._clear_effects()
 
         if not self.ai_pending:
             self._reset_controller()
@@ -344,8 +446,7 @@ class PlaySession:
         if self.is_last_level:
             self.state = ALL_DONE
             self.state_time = 0.0
-            self.popups = []
-            self.flag_banner = None
+            self._clear_effects()
         else:
             self._start_level(self.index + 1)
 
@@ -365,7 +466,7 @@ class PlaySession:
     def update(self, delta_time: float, control: Control = None) -> int:
         """Кадр окна: delta_time реального времени → 0..4 шагов мира.
 
-        control — Inputs человека (right/left удерживаются, jump — фронт
+        control — Inputs человека (right/left/down удерживаются, jump — фронт
         нажатия с прошлого кадра) или объект с act(world) → Inputs.
         Загруженный ИИ-контроллер сеанса важнее: в режиме ИИ клавиши
         движения не действуют. Возвращает число сделанных шагов мира.
@@ -431,7 +532,8 @@ class PlaySession:
         world = self.world
 
         # ИИ опрашивается на КАЖДОМ шаге мира: решение раз в 4 кадра он
-        # принимает сам, а между решениями держит нажатие
+        # принимает сам, а между решениями держит нажатие. Его Inputs (с
+        # «вниз» для труб) идут в мир как есть
         if self.controller is not None:
             try:
                 return self.controller.act(world)
@@ -445,44 +547,75 @@ class PlaySession:
         jump = self._jump_pending
         self._jump_pending = False  # фронт тратится на первом шаге
 
-        return Inputs(right=bool(held.right), left=bool(held.left), jump=jump)
+        return Inputs(
+            right=bool(held.right),
+            left=bool(held.left),
+            jump=jump,
+            down=bool(getattr(held, "down", False)),
+        )
 
     def _step_world(self, inputs: Inputs) -> None:
         world = self.world
-
-        # Враг приносит очки через полсекунды после прыжка на него, когда
-        # его убирают из списка, — запоминаем, кто был, чтобы «+100»
-        # всплыло над ним, а не над ушедшим вперёд игроком
-        enemies_before = list(world.enemies)
+        area = getattr(world, "area", None)
 
         events = world.step(inputs)
 
+        # Ушёл в комнату или вернулся: «+100» и монеты прежней части висели
+        # бы в чужих координатах — убираем (баннер тайника остаётся)
+        if getattr(world, "area", None) is not area:
+            self.popups = []
+            self.block_coins = []
+            self.bumps = []
+
+        # Очки за врага начисляются сразу в момент прыжка или удара, и
+        # событие несёт его координаты — «+100» всплывает над ним
         for event in events:
-            self._on_event(event, enemies_before)
+            self._on_event(event)
 
     # ========================================================
     # СОБЫТИЯ → ВСПЛЫВАЮЩИЕ ОЧКИ
     # ========================================================
 
-    def _on_event(self, event: Event, enemies_before: list) -> None:
+    def _on_event(self, event: Event) -> None:
         world = self.world
         player = world.player
         kind = event.kind
+        info = event.info or {}
 
         if kind == "coin":
             self._popup(f"+{event.points}", player.center_x, player.top + 12, kind)
 
-        elif kind == "block":
-            # Блок «?» над головой: удар засчитан, когда игрок летел вверх сквозь него
-            self._popup(f"+{event.points}", player.center_x, player.top + 40, kind)
+        elif kind in ("block", "bump"):
+            # Блок «?» твёрдый: удар головой снизу. Блок подпрыгивает, из
+            # непустого вылетает монета, над ним — «+100»
+            x = float(info.get("x", player.center_x))
+            y = float(info.get("y", player.top + 16))
+            block = self._block_at(x, y)
+            if block is not None:
+                self.bumps = [bump for bump in self.bumps if bump.block is not block]
+                self.bumps.append(Bump(block=block))
+            if kind == "block":
+                self.block_coins.append(BlockCoin(x=x, y=y))
+                self._popup(f"+{event.points}", x, y + BLOCK_POPUP_Y, kind)
 
-        elif kind == "enemy":
-            x, y = player.center_x, player.top + 12
-            for enemy in enemies_before:
-                if not enemy.sprite_lists and not enemy.is_alive:
-                    x, y = enemy.center_x, enemy.top + 8
-                    break
-            self._popup(f"+{event.points}", x, y, kind)
+        elif kind in ("enemy", "stomp"):
+            # Цепочка прыжков без приземления: 100, 200, 400… — вторая и
+            # дальше золотом, от 1000 — крупно
+            x = float(info.get("x", player.center_x))
+            y = float(info.get("y", player.top)) + 24
+            chain = int(info.get("chain", 0) or 0)
+            color_kind = "chain" if chain > 1 else kind
+            self._popup(f"+{event.points}", x, y, color_kind,
+                        big=event.points >= BIG_POPUP_POINTS)
+
+        elif kind == "secret":
+            found = len(world.rooms_visited)
+            total = int(world.totals.get("secrets", found))
+            self.banner = Banner(
+                title="СЕКРЕТНАЯ КОМНАТА!",
+                subtitle=f"Тайник {found} из {total}",
+                kind="secret",
+            )
 
         elif kind == "flag":
             fraction = float(event.info.get("fraction", world.flag_fraction or 0.0))
@@ -516,16 +649,49 @@ class PlaySession:
             )
         )
 
-    def _age_effects(self, delta_time: float) -> None:
-        if self.popups:
-            for popup in self.popups:
-                popup.age += delta_time
-            self.popups = [popup for popup in self.popups if popup.alive]
+    def _block_at(self, x: float, y: float):
+        """Блок «?» текущей части уровня по центру (из события удара)."""
 
-        if self.flag_banner is not None:
-            self.flag_banner.age += delta_time
-            if not self.flag_banner.alive:
-                self.flag_banner = None
+        for block in getattr(self.world, "blocks", ()):
+            if abs(block.center_x - x) < 1.0 and abs(block.center_y - y) < 1.0:
+                return block
+        return None
+
+    def _clear_effects(self) -> None:
+        self.popups: list[Popup] = []
+        self.flag_banner: Optional[FlagBanner] = None
+        self.banner: Optional[Banner] = None
+        self.block_coins: list[BlockCoin] = []
+        self.bumps: list[Bump] = []
+
+    def _age_effects(self, delta_time: float) -> None:
+        # Эффекты стареют по реальному времени окна, а не по шагам мира:
+        # на паузе GameView не зовёт update, и они замирают вместе с миром
+        for name in ("popups", "block_coins", "bumps"):
+            effects = getattr(self, name)
+            if effects:
+                for effect in effects:
+                    effect.age += delta_time
+                setattr(self, name, [effect for effect in effects if effect.alive])
+
+        for name in ("flag_banner", "banner"):
+            banner = getattr(self, name)
+            if banner is not None:
+                banner.age += delta_time
+                if not banner.alive:
+                    setattr(self, name, None)
+
+    @property
+    def pipe_hint(self) -> bool:
+        """Игрок стоит на трубе-входе: над ним подсказка «↓»."""
+
+        world = self.world
+        return (
+            self.state == PLAYING
+            and world.phase == WORLD_PLAYING
+            and world.on_ground
+            and world.warp_under_player() is not None
+        )
 
     # ========================================================
     # КОНЕЦ УРОВНЯ
@@ -538,8 +704,10 @@ class PlaySession:
         summary = world.summary()
 
         record_before = self.records.level(level.id)
+        details = {key: summary[key] for key in COLLECTED_KEYS if key in summary}
         try:
-            updated = self.records.update(level.id, who, summary["score"], summary["won"])
+            updated = self.records.update(level.id, who, summary["score"], summary["won"],
+                                          details=details)
         except Exception as error:  # noqa: BLE001 — рекорды не должны ронять игру
             print(f"[records] не удалось обновить рекорд: {error}")
             updated = False
@@ -582,6 +750,10 @@ __all__ = [
     "PlaySession",
     "Popup",
     "FlagBanner",
+    "Banner",
+    "BlockCoin",
+    "Bump",
+    "COLLECTED_KEYS",
     "LevelResult",
     "level_breakdown",
     "PLAYING",

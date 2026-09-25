@@ -419,8 +419,9 @@ class Map:
         center_x, center_y = self.get_position(data)
         sprite = cls(center_x, center_y)
 
-        # Переопределяем текстуру, если указана
-        if self.get_texture_path(data):
+        # Переопределяем текстуру, если указана. Кроме блока «?»: его
+        # картинка показывает, сколько ударов в нём осталось
+        if self.get_texture_path(data) and not isinstance(sprite, ScoreBlock):
             texture_file = self.resolve_texture_path(data)
             if texture_file is not None:
                 texture = self._get_texture(texture_file)

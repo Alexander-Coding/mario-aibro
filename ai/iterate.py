@@ -38,6 +38,9 @@ def main() -> None:
     parser.add_argument("--ent", type=float, default=0.01)
     parser.add_argument("--skip-train", action="store_true")
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--train-args", default="",
+                        help="прочие аргументы ai.train одной строкой, например "
+                             "\"--reward collect --drill 0.1 --critic-warmup 20\"")
     args = parser.parse_args()
 
     py = sys.executable
@@ -49,6 +52,7 @@ def main() -> None:
                "--lr", str(args.lr), "--ent", str(args.ent)]
         if args.init:
             cmd += ["--init", args.init]
+        cmd += args.train_args.split()
         run(cmd)
 
     best = MODELS / f"{args.name}_best.pt"

@@ -23,29 +23,29 @@ from typing import Optional
 
 import torch
 
-from ai.features import ACTION_LABELS, FeatureBuilder
-from ai.model import POINT_BIN_CENTERS, POINT_BIN_LABELS, MarioJev
+from ai.features import ACTION_LABELS, FeatureBuilder, model_view
+from ai.model import POINT_BIN_CENTERS, POINT_BIN_LABELS, MarioJev, config_from_state_dict
 from core.world import GameWorld
 
 MODEL_DIR = Path(__file__).resolve().parent / "models"
 
 def default_model_path() -> Path:
-    """Модель по умолчанию для игры и турнира — самая свежая итерация.
+    """Модель по умолчанию для игры и турнира.
 
-    Берётся самый новый откалиброванный `*_final.pt`, если он не старше
-    самого нового `*_best.pt`; иначе — самый новый `*_best.pt`, затем
-    `*_last.pt`. Так новая итерация обучения (ai.iterate --name iterN)
-    сразу попадает в игру, а устаревший final не подменяет свежую модель.
+    Самый новый откалиброванный `*_final.pt` — его выпускают в игру
+    осознанно (ai.calibrate, после турнира). Только если финальных нет —
+    самый новый `*_best.pt`, затем `*_last.pt`. Раньше свежий `*_best.pt`
+    перебивал `*_final.pt`, и в игру молча попадала необкалиброванная
+    модель из подражания (bc*_best) с головами «опасность» и «очки» от
+    прошлой версии.
     """
 
     def newest(pattern: str) -> Optional[Path]:
         found = sorted(MODEL_DIR.glob(pattern), key=lambda p: p.stat().st_mtime)
         return found[-1] if found else None
 
-    final, best, last = newest("*_final.pt"), newest("*_best.pt"), newest("*_last.pt")
-    if final is not None and (best is None or final.stat().st_mtime >= best.stat().st_mtime):
-        return final
-    for path in (best, last):
+    for pattern in ("*_final.pt", "*_best.pt", "*_last.pt"):
+        path = newest(pattern)
         if path is not None:
             return path
     raise FileNotFoundError(
@@ -69,12 +69,14 @@ class DecisionModel:
         self.meta = meta or {}
         self._builder: Optional[FeatureBuilder] = None
         self._world_id: Optional[int] = None
+        # Модель прошлой версии знает только первые действия списка
+        self.labels = ACTION_LABELS[:model.actions]
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "DecisionModel":
         path = Path(path) if path else default_model_path()
         data = torch.load(path, map_location="cpu", weights_only=False)
-        model = MarioJev(**data["config"])
+        model = MarioJev(**config_from_state_dict(data["state_dict"], data["config"]))
         model.load_state_dict(data["state_dict"])
         # «MarioJev mariojev2 final» → «MarioJev 2 final» — коротко, чтобы влезло в панель ИИ
         label = path.stem.replace("mariojev", "").replace("_", " ").strip() or path.stem
@@ -89,7 +91,8 @@ class DecisionModel:
 
     @torch.inference_mode()
     def raw(self, world: GameWorld, last_action: int = 0):
-        obs = self._features(world).build(last_action)
+        # Модели прошлого окна (24 столбца) получают вырезку своей ширины
+        obs = model_view(self._features(world).build(last_action), self.model)
         batch = {k: torch.as_tensor(v[None]) for k, v in obs.items()}
         logits, value, danger, points = self.model(batch)
         return logits[0], value[0], danger[0], points[0]
@@ -117,9 +120,9 @@ class DecisionModel:
             "answers": {
                 "move": {
                     "type": "choice",
-                    "choice": ACTION_LABELS[index],
+                    "choice": self.labels[index],
                     "index": index,
-                    "probabilities": {label: round(float(p), 4) for label, p in zip(ACTION_LABELS, probs)},
+                    "probabilities": {label: round(float(p), 4) for label, p in zip(self.labels, probs)},
                     "confidence": round(_confidence(probs), 4),
                 },
                 "danger": {

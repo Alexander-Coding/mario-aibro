@@ -9,6 +9,12 @@
     while not world.done:
         world.step(Inputs(right=True, jump=...))
     print(world.score, world.won)
+
+Уровень может прятать секретные комнаты: труба-вход («вниз», стоя на ней)
+ведёт в комнату, из комнаты выходят в боковую трубу и вылезают из
+другой трубы дальше по уровню. Уровень и каждая комната — это Area со
+своими стенами, объектами и врагами; world.walls, world.enemies и т. п.
+всегда отдают ту часть, где сейчас игрок.
 """
 
 from __future__ import annotations
@@ -27,9 +33,13 @@ import arcade
 import numpy as np
 
 from core import rules
+from core import snapshot as _snapshot
+from Entities.Enemies.koopa import Koopa
 from Entities.player import Player
 from map import BASE_DIR, Map
+from Objects.Coin import Coin
 from Objects.Flag import Flag
+from Objects.ScoreBlock import ScoreBlock
 
 LevelSource = Union[str, Path, dict]
 
@@ -40,17 +50,26 @@ TO_CASTLE = "to_castle"
 COMPLETE = "complete"
 DEAD = "dead"
 
+# Трубы: уход вниз в трубу-вход, уход вбок в трубу выхода из комнаты,
+# подъём из трубы-выхода. Управление в это время у игры
+PIPE_DOWN = "pipe_down"
+PIPE_SIDE = "pipe_side"
+PIPE_UP = "pipe_up"
+PIPE_PHASES = (PIPE_DOWN, PIPE_SIDE, PIPE_UP)
+
 
 class Inputs(NamedTuple):
     """Управление на один кадр.
 
     right/left — клавиша удерживается; jump — клавишу прыжка нажали в этом
-    кадре (фронт нажатия, как on_key_press), а не держат.
+    кадре (фронт нажатия, как on_key_press), а не держат; down — «вниз»
+    удерживается (стоя на трубе-входе — уйти в неё).
     """
 
     right: bool = False
     left: bool = False
     jump: bool = False
+    down: bool = False
 
 
 @dataclass
@@ -305,6 +324,161 @@ class _QuietMap:
 
 
 # ===============================================================
+# ТРУБЫ И КОМНАТЫ
+# ===============================================================
+
+
+def _point(value) -> tuple[float, float]:
+    """[x, y] или {"x": .., "y": ..} → (x, y)."""
+    if isinstance(value, dict):
+        return float(value["x"]), float(value["y"])
+    x, y = value
+    return float(x), float(y)
+
+
+@dataclass
+class Warp:
+    """Труба-вход в секретную комнату и труба, из которой потом вылезти.
+
+    В JSON уровня: "warps": [{"pipe": [x, y], "exit": [x, y], "room": {...}}],
+    где pipe и exit — центр ЛЕВОГО ВЕРХНЕГО тайла трубы (как их кладёт
+    редактор), room — комната в формате редактора плюс "exit": [x, y] —
+    центр НИЖНЕГО тайла устья боковой трубы, в которую уходят из комнаты.
+    """
+
+    x: float            # середина трубы-входа
+    top: float          # её верх — на нём стоит игрок
+    room: str           # ключ комнаты в world.areas
+    exit_x: float       # середина трубы-выхода в уровне
+    exit_top: float     # её верх
+
+
+@dataclass
+class RoomExit:
+    """Устье боковой трубы в комнате: упёрся в него, идя вправо, — выход."""
+
+    left: float
+    bottom: float
+    top: float
+    warp: Warp
+
+
+def _build_tile_grid(walls) -> np.ndarray:
+    """Статическая сетка твёрдых блоков: solid[tx, ty] = 1.
+
+    Стены не разрушаются (пустой блок «?» — тоже стена), поэтому сетка
+    строится один раз на часть уровня.
+    """
+
+    tiles = [
+        (int(wall.center_x // rules.TILE), int(wall.center_y // rules.TILE))
+        for wall in walls
+    ]
+
+    max_tx = max((t[0] for t in tiles), default=0)
+    max_ty = max((t[1] for t in tiles), default=0)
+
+    grid = np.zeros((max_tx + 64, max(max_ty, 24) + 16), dtype=np.uint8)
+
+    for tx, ty in tiles:
+        if tx >= 0 and ty >= 0:
+            grid[tx, ty] = 1
+
+    return grid
+
+
+def _walls_on_grid(walls) -> bool:
+    half = rules.TILE / 2
+    for wall in walls:
+        if abs(wall.width - rules.TILE) > 0.5 or abs(wall.height - rules.TILE) > 0.5:
+            return False
+        if (wall.center_x - half) % rules.TILE or (wall.center_y - half) % rules.TILE:
+            return False
+    return True
+
+
+class Area:
+    """Уровень или секретная комната: свои стены, объекты, враги.
+
+    Блоки «?» лежат и в walls (они твёрдые — об них бьётся физика и
+    игрока, и врагов), и в blocks — для ударов головой и для признаков
+    нейросети. В objects остаются только монеты и флаг.
+    """
+
+    def __init__(self, world: "GameWorld", key: str, data: dict, *, kind: str, theme: str):
+        self.key = key
+        self.kind = kind
+        self.theme = theme
+
+        # Map может дописывать в словарь — отдаём копию
+        with _QuietMap():
+            self.map = Map(data=copy.deepcopy(data))
+
+        self.walls = self.map.get_walls()
+        self.objects = self.map.get_objects()
+
+        self.blocks: list[ScoreBlock] = []
+        for obj in list(self.objects):
+            if isinstance(obj, ScoreBlock):
+                obj.remove_from_sprite_lists()
+                self.walls.append(obj)
+                self.blocks.append(obj)
+
+        # Без пространственного хэша физика проверяет каждый блок уровня
+        # на каждом кадре: 2.9 тыс. кадров/с против 27 тыс. на уровне 1-1
+        self.walls.enable_spatial_hashing()
+
+        self.decorations = self.map.get_decorations()
+        self.enemies = self.map.get_enemies()
+
+        spawn_x, spawn_y = self.map.get_player_spawn()
+        self.spawn = (float(spawn_x), float(spawn_y))
+
+        self.tile_grid = _build_tile_grid(self.walls)
+
+        # Враги — по тайлам, если все стены лежат ровной сеткой 32×32.
+        # Иначе (нестандартные блоки из редактора) — движок arcade.
+        self.tile_physics = _walls_on_grid(self.walls)
+
+        self.enemy_engines: dict[Any, Any] = {
+            enemy: (
+                TileBody(enemy, world, enemy.gravity)
+                if self.tile_physics
+                else arcade.PhysicsEnginePlatformer(
+                    player_sprite=enemy,
+                    walls=self.walls,
+                    gravity_constant=enemy.gravity,
+                )
+            )
+            for enemy in self.enemies
+        }
+
+        self.active_enemies: set[int] = set()
+        if not world.activate_enemies:
+            self.active_enemies = {id(enemy) for enemy in self.enemies}
+
+        # Движок игрока — свой на каждую часть: у неё свои стены
+        self.physics_engine = arcade.PhysicsEnginePlatformer(
+            player_sprite=world.player,
+            walls=self.walls,
+            gravity_constant=world.player.gravity,
+        )
+
+        self.warps: list[Warp] = []
+        self.exit: Optional[RoomExit] = None
+
+        # Границы части — для камеры
+        sprites = list(self.walls) + list(self.objects) + list(self.decorations)
+        if sprites:
+            self.left = min(s.left for s in sprites)
+            self.right = max(s.right for s in sprites)
+            self.bottom = min(s.bottom for s in sprites)
+            self.top = max(s.top for s in sprites)
+        else:
+            self.left, self.right, self.bottom, self.top = 0.0, 3000.0, 0.0, 600.0
+
+
+# ===============================================================
 # МИР
 # ===============================================================
 
@@ -338,14 +512,11 @@ class GameWorld:
         self.geometry = build_geometry(self.level_data)
 
         # Заполняется в reset()
-        self.map: Optional[Map] = None
         self.player: Optional[Player] = None
-        self.walls = arcade.SpriteList()
-        self.objects = arcade.SpriteList()
-        self.decorations = arcade.SpriteList()
-        self.enemies = arcade.SpriteList()
-        self.physics_engine: Optional[arcade.PhysicsEnginePlatformer] = None
-        self.enemy_physics_engines: dict[Any, arcade.PhysicsEnginePlatformer] = {}
+        self.main: Optional[Area] = None
+        self.area: Optional[Area] = None
+        self.areas: dict[str, Area] = {}
+        self.warps: list[Warp] = []
 
         self.reset()
 
@@ -356,58 +527,65 @@ class GameWorld:
     def reset(self) -> None:
         """Пересобирает уровень с нуля."""
 
-        # Map может дописывать в словарь — отдаём копию
-        with _QuietMap():
-            self.map = Map(data=copy.deepcopy(self.level_data))
-
-        self.walls = self.map.get_walls()
-        # Без пространственного хэша физика проверяет каждый блок уровня
-        # на каждом кадре: 2.9 тыс. кадров/с против 27 тыс. на уровне 1-1
-        self.walls.enable_spatial_hashing()
-
-        self.objects = self.map.get_objects()
-        self.decorations = self.map.get_decorations()
-        self.enemies = self.map.get_enemies()
-
-        spawn_x, spawn_y = self.map.get_player_spawn()
-        self.spawn = (float(spawn_x), float(spawn_y))
-
         self.player = Player()
-        self.player.center_x = spawn_x
-        self.player.center_y = spawn_y
 
-        self.physics_engine = arcade.PhysicsEnginePlatformer(
-            player_sprite=self.player,
-            walls=self.walls,
-            gravity_constant=self.player.gravity,
+        main_data = {k: v for k, v in self.level_data.items() if k != "warps"}
+        self.main = Area(
+            self, "main", main_data,
+            kind="main", theme=str(self.level_data.get("theme", "overworld")),
         )
+        self.areas = {"main": self.main}
+        self.warps = []
 
-        self._build_tile_grid()
-
-        # Враги — по тайлам, если все стены лежат ровной сеткой 32×32.
-        # Иначе (нестандартные блоки из редактора) — движок arcade.
-        self.tile_physics = self._walls_on_grid()
-
-        self.enemy_physics_engines = {
-            enemy: (
-                TileBody(enemy, self, enemy.gravity)
-                if self.tile_physics
-                else arcade.PhysicsEnginePlatformer(
-                    player_sprite=enemy,
-                    walls=self.walls,
-                    gravity_constant=enemy.gravity,
-                )
+        half = rules.TILE / 2
+        for index, spec in enumerate(self.level_data.get("warps") or []):
+            key = str(spec.get("id") or f"room{index + 1}")
+            room_data = spec["room"]
+            room = Area(
+                self, key, room_data,
+                kind="room", theme=str(room_data.get("theme", "underground")),
             )
-            for enemy in self.enemies
-        }
 
-        self._active_enemies: set[int] = set()
-        if not self.activate_enemies:
-            self._active_enemies = {id(enemy) for enemy in self.enemies}
+            pipe_x, pipe_y = _point(spec["pipe"])
+            exit_x, exit_y = _point(spec["exit"])
+            warp = Warp(
+                x=pipe_x + half,
+                top=pipe_y + half,
+                room=key,
+                exit_x=exit_x + half,
+                exit_top=exit_y + half,
+            )
+            self.main.warps.append(warp)
+            self.warps.append(warp)
+
+            if room_data.get("exit") is not None:
+                mouth_x, mouth_y = _point(room_data["exit"])
+                room.exit = RoomExit(
+                    left=mouth_x - half,
+                    bottom=mouth_y - half,
+                    top=mouth_y + half + rules.TILE,
+                    warp=warp,
+                )
+
+            self.areas[key] = room
+
+        self.area = self.main
+
+        self.spawn = self.main.spawn
+        self.player.center_x, self.player.center_y = self.spawn
 
         self.flag_sprite: Optional[Flag] = next(
-            (obj for obj in self.objects if isinstance(obj, Flag)), None
+            (obj for obj in self.main.objects if isinstance(obj, Flag)), None
         )
+
+        # Сколько всего можно взять — для итогов «сколько собрал из возможного»
+        areas = list(self.areas.values())
+        self.totals = {
+            "coins": sum(isinstance(obj, Coin) for area in areas for obj in area.objects),
+            "block_hits": sum(block.initial_hits for area in areas for block in area.blocks),
+            "enemies": sum(len(area.enemies) for area in areas),
+            "secrets": len(self.warps),
+        }
 
         # Состояние
         self.phase = PLAYING
@@ -431,47 +609,102 @@ class GameWorld:
         self._knockback = 0
         self._sequence_frames = 0
 
+        # Цепочка прыжков по врагам без приземления
+        self._chain = 0
+
+        # Трубы
+        self._pipe_warp: Optional[Warp] = None
+        self._pipe_frames = 0
+        self.rooms_visited: set[str] = set()
+
     # ===========================================================
-    # СЕТКА ТАЙЛОВ ДЛЯ НАБЛЮДЕНИЯ
+    # СНИМОК И ОТКАТ
     # ===========================================================
 
-    def _build_tile_grid(self) -> None:
-        """Статическая сетка твёрдых блоков: solid[tx, ty] = 1.
+    def snapshot(self) -> "_snapshot.WorldSnapshot":
+        """Точный снимок состояния — для планировщика, который проигрывает
+        продолжения на симуляторе. Что именно снимается — core/snapshot.py.
 
-        Стены не разрушаются, поэтому сетка строится один раз на уровень.
-        """
+        Новое изменяемое поле мира нужно внести в snapshot.WORLD_FIELDS
+        (или в WORLD_STATIC, если оно не меняется после reset())."""
+        return _snapshot.capture(self)
 
-        tiles = [
-            (int(wall.center_x // rules.TILE), int(wall.center_y // rules.TILE))
-            for wall in self.walls
-        ]
+    def restore(self, state: "_snapshot.WorldSnapshot") -> None:
+        """Возвращает мир к снимку. Дальше любые нажатия дают кадр в кадр
+        то же, что дал бы мир из момента снимка. Снимок остаётся годным:
+        его можно восстанавливать снова. После reset() — ValueError."""
+        _snapshot.apply(self, state)
 
-        max_tx = max((t[0] for t in tiles), default=0)
-        max_ty = max((t[1] for t in tiles), default=0)
+    # ===========================================================
+    # ТЕКУЩАЯ ЧАСТЬ УРОВНЯ
+    # ===========================================================
 
-        self.tile_grid = np.zeros((max_tx + 64, max(max_ty, 24) + 16), dtype=np.uint8)
+    @property
+    def map(self) -> Map:
+        return self.area.map
 
-        for tx, ty in tiles:
-            if tx >= 0 and ty >= 0:
-                self.tile_grid[tx, ty] = 1
+    @property
+    def walls(self) -> arcade.SpriteList:
+        return self.area.walls
 
-    def _walls_on_grid(self) -> bool:
-        half = rules.TILE / 2
-        for wall in self.walls:
-            if abs(wall.width - rules.TILE) > 0.5 or abs(wall.height - rules.TILE) > 0.5:
-                return False
-            if (wall.center_x - half) % rules.TILE or (wall.center_y - half) % rules.TILE:
-                return False
-        return True
+    @property
+    def objects(self) -> arcade.SpriteList:
+        return self.area.objects
+
+    @property
+    def decorations(self) -> arcade.SpriteList:
+        return self.area.decorations
+
+    @property
+    def enemies(self) -> arcade.SpriteList:
+        return self.area.enemies
+
+    @property
+    def blocks(self) -> list[ScoreBlock]:
+        return self.area.blocks
+
+    @property
+    def tile_grid(self) -> np.ndarray:
+        return self.area.tile_grid
+
+    @property
+    def tile_physics(self) -> bool:
+        return self.area.tile_physics
+
+    @property
+    def physics_engine(self) -> arcade.PhysicsEnginePlatformer:
+        return self.area.physics_engine
+
+    @property
+    def enemy_physics_engines(self) -> dict:
+        return self.area.enemy_engines
+
+    @property
+    def in_room(self) -> bool:
+        return self.area is not self.main
 
     def solid_at(self, tx: int, ty: int) -> bool:
         # За краями уровня — пустота: у игрока слева от x=0 нет стены,
         # он там падает в пропасть
+        grid = self.area.tile_grid
         if tx < 0 or ty < 0:
             return False
-        if tx >= self.tile_grid.shape[0] or ty >= self.tile_grid.shape[1]:
+        if tx >= grid.shape[0] or ty >= grid.shape[1]:
             return False
-        return bool(self.tile_grid[tx, ty])
+        return bool(grid[tx, ty])
+
+    def warp_under_player(self) -> Optional[Warp]:
+        """Труба-вход, на которой стоит игрок (можно уйти «вниз»)."""
+
+        player = self.player
+        for warp in self.area.warps:
+            if (
+                abs(player.center_x - warp.x) <= rules.WARP_REACH
+                and abs(player.bottom - warp.top) <= 2.0
+            ):
+                return warp
+        return None
+
 
     # ===========================================================
     # ОЧКИ И СОБЫТИЯ
@@ -507,6 +740,16 @@ class GameWorld:
         return self.phase in (FLAGPOLE, TO_CASTLE)
 
     @property
+    def in_pipe(self) -> bool:
+        """Марио въезжает в трубу или вылезает из неё."""
+        return self.phase in PIPE_PHASES
+
+    @property
+    def cutscene(self) -> bool:
+        """Любая заставка: финиш или труба. Нажатия в ней ничего не меняют."""
+        return self.finishing or self.in_pipe
+
+    @property
     def progress(self) -> float:
         """Доля пути от старта до двери замка по лучшей достигнутой X."""
         span = max(self.geometry.door_x - self.spawn[0], 1.0)
@@ -533,6 +776,8 @@ class GameWorld:
             self._step_flagpole()
         elif self.phase == TO_CASTLE:
             self._step_to_castle()
+        elif self.phase in PIPE_PHASES:
+            self._step_pipe()
 
         if not self.done:
             self._step_enemies()
@@ -545,10 +790,12 @@ class GameWorld:
         if self.phase == PLAYING:
             self._check_time_and_death()
 
-        if self.phase == PLAYING:
+        if self.phase == PLAYING and not self.in_room:
             self._check_flagpole()
 
-        self.max_x = max(self.max_x, self.player.center_x)
+        # Прогресс — только по самому уровню: X в комнате — другие координаты
+        if not self.in_room:
+            self.max_x = max(self.max_x, self.player.center_x)
 
         return self.events
 
@@ -556,6 +803,13 @@ class GameWorld:
 
     def _step_playing(self, inputs: Inputs) -> None:
         player = self.player
+
+        # «Вниз» на трубе-входе — в секретную комнату
+        if inputs.down and self.on_ground and self._knockback == 0:
+            warp = self.warp_under_player()
+            if warp is not None:
+                self._enter_pipe(warp)
+                return
 
         if self._knockback > 0:
             self._knockback -= 1
@@ -571,8 +825,40 @@ class GameWorld:
 
         # Порядок как в исходном GameView.on_update:
         # сначала физика, потом логика игрока
+        rising = player.change_y - self.physics_engine.gravity_constant > 0
+        before = player.position
         self.physics_engine.update()
+
+        # Упёрся головой, а arcade выталкивает вниз по 1 px, пока не станет
+        # свободно. В щели ровно в рост Марио (блок «?» над трубой выхода в
+        # комнате 1-1) с дробной высотой прыжка свободного места не находится,
+        # и его протаскивало сквозь пол до y≈−16 — «смерть в яму» в закрытой
+        # комнате. Летел вверх, а оказался ниже старта — это удар головой
+        if rising and player.center_y < before[1] - 2:
+            player.position = before
+            player.change_y = 0
+
         self.on_ground = self.physics_engine.can_jump()
+
+        # Летел вверх, и физика обнулила скорость — упёрся головой
+        if rising and player.change_y == 0:
+            self._head_bump()
+
+        if self.on_ground:
+            self._chain = 0
+
+        # Устье боковой трубы в комнате: упёрся в него, идя вправо
+        room_exit = self.area.exit
+        if (
+            room_exit is not None
+            and inputs.right
+            and not inputs.left
+            and self.on_ground
+            and player.right >= room_exit.left - 2.0
+            and room_exit.bottom - 2.0 <= player.bottom <= room_exit.bottom + 8.0
+        ):
+            self._enter_side_pipe(room_exit.warp)
+            return
 
         player.update(self.on_ground, rules.FIXED_DT)
 
@@ -580,38 +866,232 @@ class GameWorld:
         # и без неё столкновения на обучении разошлись бы с игрой
         player.update_animations(rules.FIXED_DT)
 
+    # -----------------------------------------------------------
+    # БЛОКИ «?»
+    # -----------------------------------------------------------
+
+    def _head_bump(self) -> None:
+        """Удар головой: выбить монету из блока «?» над головой.
+
+        Бьётся тот тайл, под которым больше головы, — как в оригинале:
+        если голова больше под кирпичом, блок «?» рядом не срабатывает.
+        """
+
+        player = self.player
+        head = player.top
+        block: Optional[ScoreBlock] = None
+        block_overlap = 0.0
+
+        for candidate in self.area.blocks:
+            if abs(candidate.bottom - head) > 2.0:
+                continue
+            overlap = min(player.right, candidate.right) - max(player.left, candidate.left)
+            if overlap > block_overlap:
+                block, block_overlap = candidate, overlap
+
+        if block is None:
+            return
+
+        # Кирпич рядом под большей частью головы — удар достаётся ему
+        if self.tile_physics:
+            tile = rules.TILE
+            ty = int(block.center_y // tile)
+            block_tx = int(block.center_x // tile)
+            for tx in range(int(player.left // tile), int((player.right - 1e-6) // tile) + 1):
+                if tx == block_tx or not self.solid_at(tx, ty):
+                    continue
+                overlap = min(player.right, (tx + 1) * tile) - max(player.left, tx * tile)
+                if overlap > block_overlap and not any(
+                    int(b.center_x // tile) == tx and int(b.center_y // tile) == ty
+                    for b in self.area.blocks
+                ):
+                    return
+
+        if block.hit():
+            self.add_score(
+                rules.BLOCK_POINTS, "block",
+                x=block.center_x, y=block.center_y, left=block.state,
+            )
+        else:
+            self.events.append(Event("bump", 0, {"x": block.center_x, "y": block.center_y}))
+
+        # Враг, стоявший на блоке, слетает — как в Super Mario Bros
+        for enemy in list(self.enemies):
+            if not enemy.is_alive:
+                continue
+            if abs(enemy.bottom - block.top) > 3.0:
+                continue
+            if enemy.right <= block.left or enemy.left >= block.right:
+                continue
+            if isinstance(enemy, Koopa):
+                enemy.kill()
+            else:
+                enemy.get_hit()
+            self._score_enemy(enemy, rules.ENEMY_POINTS, via="bump")
+
+    # -----------------------------------------------------------
+    # ТРУБЫ
+    # -----------------------------------------------------------
+
+    def _enter_pipe(self, warp: Warp) -> None:
+        player = self.player
+        self.phase = PIPE_DOWN
+        self._pipe_warp = warp
+        self._pipe_frames = 0
+
+        player.change_x = 0
+        player.change_y = 0
+        player.jump_requested = False
+        player.center_x = warp.x
+        player.change_state("idle")
+
+        self.events.append(Event("pipe", 0, {"dir": "down", "room": warp.room}))
+
+    def _enter_side_pipe(self, warp: Warp) -> None:
+        player = self.player
+        self.phase = PIPE_SIDE
+        self._pipe_warp = warp
+        self._pipe_frames = 0
+
+        player.change_x = 0
+        player.change_y = 0
+        player.jump_requested = False
+        player.set_direction(1)
+        player.change_state("move")
+
+        self.events.append(Event("pipe", 0, {"dir": "side", "room": warp.room}))
+
+    def _step_pipe(self) -> None:
+        player = self.player
+        warp = self._pipe_warp
+        self._pipe_frames += 1
+
+        if self.phase == PIPE_DOWN:
+            player.center_y -= rules.PIPE_SPEED
+            if player.top <= warp.top:
+                self._go_to_room(warp)
+
+        elif self.phase == PIPE_SIDE:
+            player.center_x += rules.PIPE_SPEED
+            player.update_animations(rules.FIXED_DT)
+            if self._pipe_frames >= rules.PIPE_SIDE_FRAMES:
+                self._leave_room(warp)
+
+        elif self.phase == PIPE_UP:
+            player.center_y += rules.PIPE_SPEED
+            if player.bottom >= warp.exit_top:
+                player.bottom = warp.exit_top
+                player.change_y = 0
+                self.on_ground = True
+                self.phase = PLAYING
+                self.events.append(Event("pipe", 0, {"dir": "up", "room": warp.room}))
+
+    def _go_to_room(self, warp: Warp) -> None:
+        player = self.player
+        room = self.areas[warp.room]
+
+        self.area = room
+        player.center_x, player.center_y = room.spawn
+        player.change_x = 0
+        player.change_y = 0
+        self.on_ground = False
+        self._knockback = 0
+        self._chain = 0
+        self.phase = PLAYING
+
+        if warp.room not in self.rooms_visited:
+            self.rooms_visited.add(warp.room)
+            self.stats["secret"] += 1
+            self.events.append(Event("secret", 0, {"room": warp.room}))
+
+    def _leave_room(self, warp: Warp) -> None:
+        player = self.player
+
+        self.area = self.main
+        player.center_x = warp.exit_x
+        player.top = warp.exit_top
+        player.change_x = 0
+        player.change_y = 0
+        player.set_direction(1)
+        player.change_state("idle")
+        self.on_ground = False
+        self._pipe_frames = 0
+        self.phase = PIPE_UP
+
+    # -----------------------------------------------------------
+    # ВРАГИ
+    # -----------------------------------------------------------
+
     def _step_enemies(self) -> None:
         player_x = self.player.center_x
+        area = self.area
 
-        for enemy in self.enemies:
-            if id(enemy) in self._active_enemies:
+        for enemy in area.enemies:
+            if id(enemy) in area.active_enemies:
                 continue
             if abs(enemy.center_x - player_x) < rules.ENEMY_ACTIVATION_DISTANCE:
-                self._active_enemies.add(id(enemy))
+                area.active_enemies.add(id(enemy))
 
-        for enemy, engine in self.enemy_physics_engines.items():
-            if not enemy.is_alive or id(enemy) not in self._active_enemies:
+        for enemy, engine in area.enemy_engines.items():
+            if not enemy.is_alive or id(enemy) not in area.active_enemies:
                 continue
             engine.update()
 
-        for enemy in list(self.enemies):
-            if id(enemy) not in self._active_enemies:
+        for enemy in list(area.enemies):
+            if id(enemy) not in area.active_enemies:
                 continue
 
-            enemy.update(rules.FIXED_DT, self.walls)
+            enemy.update(rules.FIXED_DT, area.walls)
             enemy.update_animations(rules.FIXED_DT)
 
             # Враг сам упал в пропасть — убираем без очков
             if enemy.center_y < rules.DEATH_Y:
                 enemy.remove_from_sprite_lists()
-                self.enemy_physics_engines.pop(enemy, None)
+                area.enemy_engines.pop(enemy, None)
+
+    def _score_enemy(self, enemy, points: int, *, via: str, kind: str = "enemy", **info) -> None:
+        """Очки за врага — сразу в момент прыжка или удара, а не когда
+        уберут спрайт: так их видно и игроку, и нейросети."""
+
+        if kind == "enemy":
+            enemy.scored = True
+        self.add_score(points, kind, type=type(enemy).__name__.lower(), via=via,
+                       x=enemy.center_x, y=enemy.center_y, **info)
 
     def _check_collisions(self) -> None:
         player = self.player
         health_before = player.health
 
+        # Что с врагами было до прыжка — чтобы понять, кого растоптали
+        before = {
+            id(enemy): bool(getattr(enemy, "is_shell", False))
+            for enemy in self.enemies
+            if enemy.is_alive
+        }
+
         player.check_enemy_collides(self.enemies)
         player.check_objects_collides(self, self.objects)
+
+        for enemy in self.enemies:
+            was_shell = before.get(id(enemy))
+            if was_shell is None:
+                continue
+            if not enemy.is_alive:
+                kind = "enemy"
+            elif not was_shell and getattr(enemy, "is_shell", False):
+                # Koopa ушла в панцирь. Очки — только в первый раз: через
+                # 5 с она вылезает, и иначе её можно было бы топтать
+                # бесконечно, по 100 очков каждые 5 секунд
+                if getattr(enemy, "shell_scored", False):
+                    continue
+                enemy.shell_scored = True
+                kind = "stomp"
+            else:
+                continue
+
+            chain = min(self._chain, len(rules.STOMP_CHAIN) - 1)
+            self._chain += 1
+            self._score_enemy(enemy, rules.STOMP_CHAIN[chain], via="stomp", kind=kind, chain=self._chain)
 
         if player.health < health_before:
             self._knockback = rules.KNOCKBACK_FRAMES
@@ -622,12 +1102,9 @@ class GameWorld:
         for enemy in list(self.enemies):
             if not enemy.is_alive and enemy.death_timer > 0.5:
                 enemy.remove_from_sprite_lists()
-                self.enemy_physics_engines.pop(enemy, None)
-                self.add_score(
-                    rules.ENEMY_POINTS,
-                    "enemy",
-                    type=type(enemy).__name__.lower(),
-                )
+                self.area.enemy_engines.pop(enemy, None)
+                if not getattr(enemy, "scored", False):
+                    self._score_enemy(enemy, rules.ENEMY_POINTS, via="other")
 
     def _check_time_and_death(self) -> None:
         player = self.player
@@ -644,14 +1121,15 @@ class GameWorld:
             self._die("time")
 
     def _credit_dead_enemies(self) -> None:
-        """Враг растоптан, но спрайт ещё не убран (очки идут через 0.5 с) —
-        если уровень кончился раньше, начисляем сразу: смерть оставляет
-        набранные очки."""
+        """Враг убит, но очки ещё не начислены (такого пути сейчас нет,
+        все убийства оплачиваются сразу) — начисляем в конце уровня:
+        смерть оставляет набранные очки."""
         for enemy in list(self.enemies):
             if not enemy.is_alive:
                 enemy.remove_from_sprite_lists()
-                self.enemy_physics_engines.pop(enemy, None)
-                self.add_score(rules.ENEMY_POINTS, "enemy", type=type(enemy).__name__.lower())
+                self.area.enemy_engines.pop(enemy, None)
+                if not getattr(enemy, "scored", False):
+                    self._score_enemy(enemy, rules.ENEMY_POINTS, via="other")
 
     def _die(self, cause: str) -> None:
         self._credit_dead_enemies()
@@ -785,8 +1263,15 @@ class GameWorld:
             "coins": self.stats["coin"],
             "blocks": self.stats["block"],
             "enemies": self.stats["enemy"],
+            "stomps": self.stats["stomp"],
+            "secrets": self.stats["secret"],
             "hits": self.stats["hits"],
             "frames": self.frame,
+            # Сколько было на уровне вместе с комнатами — «собрал из возможного»
+            "coins_total": self.totals["coins"],
+            "block_hits_total": self.totals["block_hits"],
+            "enemies_total": self.totals["enemies"],
+            "secrets_total": self.totals["secrets"],
         }
 
 
@@ -804,4 +1289,11 @@ __all__ = [
     "TO_CASTLE",
     "COMPLETE",
     "DEAD",
+    "PIPE_DOWN",
+    "PIPE_SIDE",
+    "PIPE_UP",
+    "PIPE_PHASES",
+    "Area",
+    "Warp",
+    "RoomExit",
 ]

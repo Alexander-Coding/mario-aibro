@@ -24,6 +24,7 @@ import os
 import time
 import warnings
 from pathlib import Path
+from typing import Optional
 
 warnings.filterwarnings("ignore")
 
@@ -32,8 +33,8 @@ import torch
 from torch import nn
 
 from ai.env import GAMMA, LevelSampler, MarioEnv
-from ai.features import observation_shapes
-from ai.model import MarioJev, count_parameters
+from ai.features import model_view, observation_shapes
+from ai.model import MarioJev, config_from_state_dict, count_parameters, expand_state_dict
 
 AI_DIR = Path(__file__).resolve().parent
 MODEL_DIR = AI_DIR / "models"
@@ -73,12 +74,14 @@ def to_torch(obs: dict, device) -> dict[str, torch.Tensor]:
 
 
 def make_env(rank: int, mix: float, difficulty: float, base_seed: int, train_levels: list,
-             reward_mode: str = "progress", gamma: float = GAMMA):
+             reward_mode: str = "progress", gamma: float = GAMMA, reward_kwargs: Optional[dict] = None,
+             drill: float = 0.0):
     def _init():
         # Каждый процесс — на одном потоке torch, чтобы не драться за ядра
         torch.set_num_threads(1)
-        sampler = LevelSampler(mix=mix, difficulty=difficulty, seed=base_seed + 7919 * rank, levels=train_levels)
-        return MarioEnv(sampler=sampler, reward_mode=reward_mode, gamma=gamma)
+        sampler = LevelSampler(mix=mix, difficulty=difficulty, seed=base_seed + 7919 * rank, levels=train_levels,
+                               drill=drill)
+        return MarioEnv(sampler=sampler, reward_mode=reward_mode, gamma=gamma, **(reward_kwargs or {}))
     return _init
 
 
@@ -161,7 +164,8 @@ def run_episode(model: MarioJev, world_factory, deterministic: bool = True, devi
 
 def _play(model, env, obs, total, deterministic, device):
     while True:
-        action, _, _ = model.act(to_torch({k: v[None] for k, v in obs.items()}, device), deterministic=deterministic)
+        view = model_view(obs, model)
+        action, _, _ = model.act(to_torch({k: v[None] for k, v in view.items()}, device), deterministic=deterministic)
         obs, reward, terminated, truncated, info = env.step(int(action.item()))
         total += reward
         if terminated or truncated:
@@ -189,8 +193,16 @@ def evaluate(model: MarioJev, factories, deterministic: bool = False, device="cp
         "score": float(np.mean([r["score"] for r in results])),
         "win_rate": float(np.mean([r["won"] for r in results])),
         "progress": float(np.mean([r["progress"] for r in results])),
+        "collected": collected_share(results),
         "per_level": results,
     }
+
+
+def collected_share(results: list[dict]) -> float:
+    """Доля взятого из возможного: монеты, удары по «?», враги (по сумме очков)."""
+    got = sum(r["coins"] + r["blocks"] + r["enemies"] for r in results)
+    total = sum(r["coins_total"] + r["block_hits_total"] + r["enemies_total"] for r in results)
+    return float(got / total) if total else 0.0
 
 
 # ===============================================================
@@ -210,7 +222,7 @@ def save_checkpoint(path: Path, model: MarioJev, meta: dict) -> None:
 
 def load_checkpoint(path: Path, device="cpu") -> tuple[MarioJev, dict]:
     data = torch.load(path, map_location=device, weights_only=False)
-    model = MarioJev(**data["config"]).to(device)
+    model = MarioJev(**config_from_state_dict(data["state_dict"], data["config"])).to(device)
     model.load_state_dict(data["state_dict"])
     model.eval()
     return model, data.get("meta", {})
@@ -237,12 +249,27 @@ def main() -> None:
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--gamma", type=float, default=0.97,
                         help="0.995 на итерациях 1–2 давал шумные преимущества на эпизодах в ~340 решений")
-    parser.add_argument("--reward", choices=("progress", "potential"), default="progress")
+    parser.add_argument("--reward", choices=("progress", "potential", "collect"), default="progress")
+    parser.add_argument("--progress-scale", type=float, default=None,
+                        help="подсказка за продвижение за весь уровень; по умолчанию 30, в режиме collect — 10")
+    parser.add_argument("--miss-penalty", type=float, default=0.5, help="collect: доля очков оставленного позади")
+    parser.add_argument("--secret-bonus", type=float, default=3.0, help="collect: награда за первый вход в комнату")
+    parser.add_argument("--reset-value", action="store_true",
+                        help="с --init: заново голова критика и нормировка награды (награда другая)")
+    parser.add_argument("--target-entropy", type=float, nargs=2, default=None, metavar=("START", "FINAL"),
+                        help="вести коэффициент энтропии к целевой энтропии политики (нат), START → FINAL по ходу "
+                             "обучения. С постоянным коэффициентом 0.02–0.03 дообучение под награду collect за 50 "
+                             "обновлений уходило к равномерному выбору (энтропия 0.6 → 1.8), с 0.01 — не сдвигалось")
+    parser.add_argument("--critic-warmup", type=int, default=0,
+                        help="первые N обновлений учить только критика: с новой наградой и сброшенным критиком "
+                             "преимущества — шум, и политика it6 за 100 обновлений растеряла навыки (энтропия 0.8 → 1.75)")
     parser.add_argument("--danger-coef", type=float, default=0.1)
     parser.add_argument("--vf-coef", type=float, default=0.5)
     parser.add_argument("--max-grad-norm", type=float, default=0.5,
                         help="при 0.5 градиент критика (норма 1–4) урезал и шаг политики: KL ~0.0005 на обновление")
     parser.add_argument("--mix", type=float, default=0.8, help="доля процедурных уровней")
+    parser.add_argument("--drill", type=float, default=0.0,
+                        help="доля тренировок: арены с блоками «?» без флага (ai/levelgen.build_drill)")
     parser.add_argument("--difficulty-start", type=float, default=0.25)
     parser.add_argument("--difficulty-ramp", type=float, default=0.6, help="доля обучения до полной сложности")
     parser.add_argument("--eval-every", type=int, default=25, help="обновлений между валидациями")
@@ -282,8 +309,11 @@ def main() -> None:
         indent=2, ensure_ascii=False))
     print(f"[train] train-уровни: {[l.id for l in train_levels]}  отложенные: {[l.id for l in test_levels]}", flush=True)
 
+    reward_kwargs = {"progress_scale": args.progress_scale, "miss_penalty": args.miss_penalty,
+                     "secret_bonus": args.secret_bonus}
     envs = SubprocVecEnv(
-        [make_env(rank, args.mix, args.difficulty_start, args.seed * 1000, train_levels, args.reward, args.gamma)
+        [make_env(rank, args.mix, args.difficulty_start, args.seed * 1000, train_levels, args.reward, args.gamma,
+                  reward_kwargs, args.drill)
          for rank in range(args.envs)],
         start_method="spawn",
     )
@@ -291,9 +321,23 @@ def main() -> None:
     init_meta: dict = {}
     if args.init:
         model, init_meta = load_checkpoint(Path(args.init), device)
-        model.train()
         if Path(args.init).resolve().parent == MODEL_DIR.resolve() and Path(args.init).stem.startswith(f"{args.name}_"):
             raise SystemExit("[train] --init из чекпойнта с тем же --name перезапишет его: дайте новое имя итерации")
+
+        # Модель прошлой версии (меньше каналов, признаков, действий, уже
+        # окно карты) — переносим веса в модель текущих размеров; патч — её
+        current = MarioJev(**{k: model.config[k] for k in ("d_model", "heads", "layers", "patch_h", "patch_w")}
+                           ).to(device)
+        if current.config != model.config:
+            print(f"[train] расширяю модель: {model.config} → {current.config}", flush=True)
+            current.load_state_dict(expand_state_dict(model.state_dict(), current, model.config))
+            model = current
+
+        if args.reset_value:
+            nn.init.orthogonal_(model.value_head[-1].weight, gain=1.0)
+            nn.init.zeros_(model.value_head[-1].bias)
+            init_meta = {k: v for k, v in init_meta.items() if k != "return_rms"}
+        model.train()
     else:
         model = MarioJev().to(device)
 
@@ -347,6 +391,8 @@ def main() -> None:
 
     recent: list[dict] = []
 
+    ent_coef = args.ent
+    last_entropy = None
     for update in range(1, total_updates + 1):
         frac = (update - 1) / total_updates
 
@@ -354,7 +400,17 @@ def main() -> None:
         lr = args.lr * (1.0 - frac)
         for group in optimizer.param_groups:
             group["lr"] = lr
-        ent_coef = args.ent + (args.ent_final - args.ent) * frac
+        if args.target_entropy is None:
+            ent_coef = args.ent + (args.ent_final - args.ent) * frac
+        else:
+            # Коэффициент — регулятор: энтропия выше цели — ослабить, ниже — усилить
+            target = args.target_entropy[0] + (args.target_entropy[1] - args.target_entropy[0]) * frac
+            # Пока учится только критик, политика стоит — регулировать нечего
+            if last_entropy is not None and update > args.critic_warmup + 1:
+                # Плавно: с шагом до ×1.25 за обновление коэффициент на it6g за 13
+                # обновлений вырос с 0.004 до 0.076 и раскачал энтропию
+                step = float(np.clip(math.exp(-0.5 * (last_entropy - target)), 0.95, 1.05))
+                ent_coef = float(np.clip(ent_coef * step, 1e-4, 0.1))
         difficulty = min(1.0, args.difficulty_start + (1.0 - args.difficulty_start) * frac / args.difficulty_ramp)
         envs.env_method("set_difficulty", difficulty)
 
@@ -460,10 +516,20 @@ def main() -> None:
                     nn.functional.binary_cross_entropy_with_logits(danger_logit, b_dt[mb], reduction="none") * dm
                 ).sum() / dm.sum().clamp(min=1.0)
 
-                loss = pg_loss + args.vf_coef * v_loss - ent_coef * ent + args.danger_coef * danger_loss
+                if update <= args.critic_warmup:
+                    # Политика стоит, пока критик не выучит новую награду:
+                    # учатся только головы критика и опасности
+                    loss = args.vf_coef * v_loss + args.danger_coef * danger_loss
+                else:
+                    loss = pg_loss + args.vf_coef * v_loss - ent_coef * ent + args.danger_coef * danger_loss
 
                 optimizer.zero_grad()
                 loss.backward()
+                if update <= args.critic_warmup:
+                    # Кодировщик общий: без этого градиент критика сдвинул бы и политику
+                    for name, param in model.named_parameters():
+                        if not name.startswith(("value_head", "danger_head")):
+                            param.grad = None
                 grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
                 optimizer.step()
 
@@ -482,11 +548,13 @@ def main() -> None:
 
         # --- журнал -------------------------------------------------
         sps = global_step / (time.time() - started)
-        window = recent[-100:]
+        # Тренировки без флага не выигрываются — в счёт «побед» и «очков» не идут
+        window = [e for e in recent if not e.get("drill")][-100:]
         ep_score = float(np.mean([e["score"] for e in window])) if window else float("nan")
         ep_win = float(np.mean([e["won"] for e in window])) if window else float("nan")
         ep_prog = float(np.mean([e["progress"] for e in window])) if window else float("nan")
-        ep_len = float(np.mean([e["frames"] for e in window])) / 4 if window else float("nan")
+        # Решений за эпизод: заставки (труба, флаг) проматываются внутри одного шага
+        ep_len = float(np.mean([e.get("steps", e["frames"] / 4) for e in window])) if window else float("nan")
 
         val_score = val_win = ""
         meta = {"update": update, "steps": global_step, "difficulty": difficulty, "args": vars(args),
@@ -503,6 +571,8 @@ def main() -> None:
                 save_checkpoint(MODEL_DIR / f"{args.name}_best.pt", actor, meta)
             save_checkpoint(MODEL_DIR / f"{args.name}_last.pt", actor, meta)
 
+        last_entropy = float(np.mean(stats["ent"]))
+
         log.writerow([update, global_step, round(sps), round(difficulty, 3), round(ep_score, 1), round(ep_win, 3),
                       round(ep_prog, 3), round(ep_len, 1), round(np.mean(stats["pg"]), 4), round(np.mean(stats["v"]), 4),
                       round(np.mean(stats["ent"]), 4), round(np.mean(stats["kl"]), 5), round(np.mean(stats["danger"]), 4),
@@ -513,7 +583,8 @@ def main() -> None:
         if update % 5 == 0 or update == 1 or val_score != "":
             print(f"[{update:5d}/{total_updates}] шагов {global_step:>9,}  {sps:5.0f}/с  слож {difficulty:.2f}  "
                   f"очки {ep_score:7.0f}  побед {ep_win:5.1%}  путь {ep_prog:5.1%}  энтр {np.mean(stats['ent']):.3f}  "
-                  f"kl {np.mean(stats['kl']):.4f}  клип {np.mean(stats['clip']):.3f}  |g| {np.mean(stats['grad']):.2f}" + (f"  | валид: очки {val_score} побед {val_win}" if val_score != "" else ""),
+                  f"kl {np.mean(stats['kl']):.4f}  клип {np.mean(stats['clip']):.3f}  |g| {np.mean(stats['grad']):.2f}  "
+                  f"k_энтр {ent_coef:.4f}" + (f"  | валид: очки {val_score} побед {val_win}" if val_score != "" else ""),
                   flush=True)
 
     save_checkpoint(MODEL_DIR / f"{args.name}_last.pt", actor, meta)

@@ -2,7 +2,7 @@
 
 Решение — раз в 4 кадра мира, как в среде обучения (ai/env.py): прыжок
 нажимается на первом кадре повтора, остальные кадры держится то же
-направление. Во время заставки финиша управление у игры.
+направление. Во время заставок (флагшток, труба) управление у игры.
 
     controller = load_controller()
     controller.reset(world)
@@ -15,9 +15,73 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
+
 from ai.decide import DecisionModel
 from ai.env import FRAME_SKIP, action_inputs
 from core.world import GameWorld, Inputs
+
+# Петля: 45 решений (3 с при решении раз в 4 кадра) в одной области без
+# новых очков и в пределах двух тайлов по X — ученик дёргается на месте
+LOOP_WINDOW = 45
+LOOP_SPAN = 64.0      # px, 2 тайла
+
+
+class LoopMeter:
+    """Метрики зацикливания для турнира (tools/tournament.py) и сбора
+    примеров (ai/imitate.py) — одно определение на оба места.
+
+    На каждом решении записывается X игрока, область (уровень или
+    комната), счёт и горизонтальное направление решения (+1 вправо,
+    −1 влево, 0 без него).
+
+    - stall_frac — доля решений, которыми заканчивается окно из 45 решений
+      в одной области с тем же счётом и размахом X меньше 2 тайлов;
+    - stalls — число максимальных отрезков таких решений подряд;
+    - flips_per_min — смены «вправо» ↔ «влево» (решения без направления
+      пропускаются) на минуту игрового времени уровня.
+    """
+
+    def __init__(self):
+        self.x: list[float] = []
+        self.area: list[str] = []
+        self.score: list[int] = []
+        self.direction: list[int] = []
+
+    def record(self, world: GameWorld, direction: int) -> None:
+        self.x.append(float(world.player.center_x))
+        self.area.append(world.area.key)
+        self.score.append(int(world.score))
+        self.direction.append(direction)
+
+    def record_inputs(self, world: GameWorld, inputs: Inputs) -> None:
+        self.record(world, int(inputs.right) - int(inputs.left))
+
+    def summary(self, frames: int) -> dict:
+        n = len(self.x)
+        stalled = np.zeros(n, dtype=bool)
+        if n >= LOOP_WINDOW:
+            x = np.asarray(self.x)
+            score = np.asarray(self.score)
+            _, area = np.unique(np.asarray(self.area), return_inverse=True)
+            windows = np.lib.stride_tricks.sliding_window_view
+            xs, areas = windows(x, LOOP_WINDOW), windows(area, LOOP_WINDOW)
+            end = slice(LOOP_WINDOW - 1, None)
+            stalled[end] = ((xs.max(1) - xs.min(1) < LOOP_SPAN)
+                            & (areas.min(1) == areas.max(1))
+                            & (score[end] == score[: n - LOOP_WINDOW + 1]))
+        starts = int(np.sum(stalled[1:] & ~stalled[:-1]) + (stalled[0] if n else 0))
+
+        moves = [d for d in self.direction if d]
+        flips = sum(a != b for a, b in zip(moves, moves[1:]))
+        minutes = frames / 3600
+        return {
+            "decisions": n,
+            "stall_frac": round(float(stalled.mean()), 4) if n else 0.0,
+            "stalls": starts,
+            "flips": flips,
+            "flips_per_min": round(flips / minutes, 1) if minutes > 0 else 0.0,
+        }
 
 
 class Controller:
@@ -38,7 +102,10 @@ class Controller:
         self._last = None
 
     def act(self, world: GameWorld) -> Inputs:
-        if world.done or world.finishing:
+        if world.done or world.cutscene:
+            # После заставки (труба) — сразу новое решение, как в среде
+            # обучения: она проматывает заставку внутри одного шага
+            self._frame = 0
             return Inputs()
 
         first = self._frame % FRAME_SKIP == 0

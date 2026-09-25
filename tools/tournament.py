@@ -30,7 +30,7 @@ MAX_FRAMES = 60 * 400
 
 
 class RandomAgent:
-    """Жмёт случайное из 6 действий раз в 4 кадра."""
+    """Жмёт случайное из действий ai.features.ACTIONS раз в 4 кадра."""
 
     name = "Случайный"
     stochastic = True
@@ -45,9 +45,10 @@ class RandomAgent:
 
     def act(self, world):
         from ai.env import FRAME_SKIP, action_inputs
+        from ai.features import N_ACTIONS
         first = self._frame % FRAME_SKIP == 0
         if first:
-            self._action = self.rng.randrange(6)
+            self._action = self.rng.randrange(N_ACTIONS)
         self._frame += 1
         return action_inputs(self._action, first)
 
@@ -78,15 +79,41 @@ class HeuristicAgent(HeuristicBot):
     stochastic = False
 
 
+# Что считаем «взятым» и где в summary() лежит «сколько было всего»
+COLLECTED = ("coins", "blocks", "enemies", "secrets")
+TOTAL_KEYS = {"coins": "coins_total", "blocks": "block_hits_total", "enemies": "enemies_total", "secrets": "secrets_total"}
+
+
 def play(agent, level) -> dict:
+    from ai.agent import LoopMeter
+    from ai.env import FRAME_SKIP
+
     world = GameWorld(level.path, name=level.name, time_limit=level.time_limit)
     agent.reset(world)
+    # Петли: на каждом кадре решения — X, область, счёт и направление нажатия
+    loops = LoopMeter()
     started = time.perf_counter()
     while not world.done and world.frame < MAX_FRAMES:
-        world.step(agent.act(world))
+        decision = world.frame % FRAME_SKIP == 0 and not world.cutscene
+        inputs = agent.act(world)
+        if decision:
+            loops.record_inputs(world, inputs)
+        world.step(inputs)
     summary = world.summary()
     summary["wall_s"] = round(time.perf_counter() - started, 2)
+    summary["loops"] = loops.summary(world.frame)
     return summary
+
+
+def loop_totals(games: list[dict]) -> dict:
+    """Петли по нескольким играм: доля — по всем решениям, смены — на минуту всех игр."""
+    decisions = sum(g["loops"]["decisions"] for g in games)
+    minutes = sum(g["frames"] for g in games) / 3600
+    return {
+        "stall_frac": sum(g["loops"]["stall_frac"] * g["loops"]["decisions"] for g in games) / max(decisions, 1),
+        "stalls": sum(g["loops"]["stalls"] for g in games) / max(len(games), 1),
+        "flips_per_min": sum(g["loops"]["flips"] for g in games) / minutes if minutes else 0.0,
+    }
 
 
 def main() -> None:
@@ -97,6 +124,10 @@ def main() -> None:
     parser.add_argument("--temperatures", default="1.0", help="температуры сэмплирования моделей через запятую")
     parser.add_argument("--no-argmax", action="store_true")
     parser.add_argument("--laya", action="store_true", help="добавить Laya (открытая альтернатива Jev) без дообучения")
+    parser.add_argument("--teacher", default=None,
+                        help="добавить учителя ai/teacher.py (модель по этому пути + правила сбора) — потолок подражания")
+    parser.add_argument("--planner", action="store_true",
+                        help="добавить планировщик ai/planner.py — учителя ученика v2")
     parser.add_argument("--only", default=None, help="играть только участников, в имени которых есть эта строка")
     parser.add_argument("--levels", default=None, help="id уровней через запятую")
     parser.add_argument("--out", default=str(OUT_DIR / "tournament.json"))
@@ -133,6 +164,16 @@ def main() -> None:
             entrants.append((f"MarioJev {stem} ({label})",
                              lambda run, p=path, t=temp: load_controller(p, deterministic=False, temperature=t), True))
 
+    if args.teacher:
+        from ai.decide import DecisionModel
+        from ai.teacher import Teacher
+        entrants.append(("Учитель (модель + правила сбора)",
+                         lambda run, p=args.teacher: Teacher(DecisionModel.load(p)), False))
+
+    if args.planner:
+        from ai.planner import Planner
+        entrants.append(("Планировщик", lambda run: Planner(), False))
+
     if args.laya:
         from ai.laya_agent import LayaController
         laya = LayaController()
@@ -155,10 +196,17 @@ def main() -> None:
                 "flag_bonus": float(np.mean([g["flag_bonus"] for g in games])),
                 "progress": float(np.mean([g["progress"] for g in games])),
                 "deaths": [g["death"] for g in games if g["death"]],
+                "collected": {key: float(np.mean([g[key] for g in games])) for key in COLLECTED},
+                "time_used": float(np.mean([g["time_used"] for g in games])),
+                "loops": loop_totals(games),
                 "games": games,
             }
+            got = per_level[level.id]["collected"]
             print(f"  {name:32s} {level.id:10s} очки {per_level[level.id]['score']:8.0f}  "
-                  f"побед {per_level[level.id]['win_rate']:4.0%}  путь {per_level[level.id]['progress']:4.0%}", flush=True)
+                  f"побед {per_level[level.id]['win_rate']:4.0%}  путь {per_level[level.id]['progress']:4.0%}  "
+                  f"монет {got['coins']:.0f}/{games[0]['coins_total']}  «?» {got['blocks']:.0f}/{games[0]['block_hits_total']}  "
+                  f"врагов {got['enemies']:.0f}/{games[0]['enemies_total']}  тайников {got['secrets']:.1f}/{games[0]['secrets_total']}  "
+                  f"время {per_level[level.id]['time_used']:.0f} с", flush=True)
         agent_obj = factory(0)
         latencies = getattr(agent_obj, "latencies", None)
         results[name] = {
@@ -167,6 +215,10 @@ def main() -> None:
             "total": sum(v["score"] for v in per_level.values()),
             "test_total": sum(v["score"] for v in per_level.values() if v["split"] == "test"),
             "wins": sum(v["win_rate"] for v in per_level.values()),
+            "collected": {key: sum(v["collected"][key] for v in per_level.values()) for key in COLLECTED},
+            # Петли по всем уровням и повторам; stalls — на уровень (сумма средних по уровням)
+            "loops": {**loop_totals([g for v in per_level.values() for g in v["games"]]),
+                      "stalls": sum(v["loops"]["stalls"] for v in per_level.values())},
             "levels": per_level,
         }
 
@@ -177,6 +229,21 @@ def main() -> None:
     for place, (name, r) in enumerate(ranking, 1):
         cells = " | ".join(f"{r['levels'][l.id]['score']:.0f}" for l in levels)
         lines.append(f"| {place} | {name} | **{r['total']:.0f}** | {r['test_total']:.0f} | {r['wins']:.1f} из {len(levels)} | {cells} |")
+    # Сколько взято из возможного: главное отличие «проходит» от «спидранит»
+    first_games = {l.id: results[ranking[0][0]]["levels"][l.id]["games"][0] for l in levels} if ranking else {}
+    possible = {key: sum(g[f"{TOTAL_KEYS[key]}"] for g in first_games.values()) for key in COLLECTED}
+    # Петли (ai/agent.py LoopMeter): доля решений в 3-секундном топтании на
+    # месте без очков, число таких отрезков на прохождение всех уровней и
+    # смены «вправо» ↔ «влево» в минуту — признак дёрганья
+    lines += ["", "| Участник | Монеты | Удары по «?» | Враги | Секретные комнаты | Время на уровни, с "
+                  "| Петли, % решений | Петель | Смен L/R в мин |", "|---|---|---|---|---|---|---|---|---|"]
+    for name, r in ranking:
+        got = r["collected"]
+        seconds = sum(v["time_used"] for v in r["levels"].values())
+        loops = r["loops"]
+        lines.append(f"| {name} | " + " | ".join(f"{got[k]:.0f} из {possible[k]}" if k != "secrets" else f"{got[k]:.1f} из {possible[k]}"
+                                               for k in COLLECTED) + f" | {seconds:.0f} "
+                     f"| {100 * loops['stall_frac']:.1f} | {loops['stalls']:.1f} | {loops['flips_per_min']:.1f} |")
     table = "\n".join(lines)
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)

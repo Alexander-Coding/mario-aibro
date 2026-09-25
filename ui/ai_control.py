@@ -70,6 +70,21 @@ def controller_name(controller: Any) -> str:
     return str(name) if name else type(controller).__name__
 
 
+def model_action_labels() -> tuple[str, ...]:
+    """Подписи действий нейросети из ai.features.ACTION_LABELS.
+
+    Читаются при каждом вызове, а не при импорте: владелец RL-части может
+    добавить действие (было 6, стало 7 с «вниз») — панель ИИ подстроится.
+    Нет RL-части или она не импортируется — пустой кортеж, игра не падает.
+    """
+
+    try:
+        from ai import features
+    except Exception:  # noqa: BLE001
+        return ()
+    return tuple(str(label) for label in getattr(features, "ACTION_LABELS", ()))
+
+
 # Контроллеры, у которых overlay() уже падал (чтобы не сыпать в лог)
 _overlay_failed: set[int] = set()
 

@@ -8,17 +8,21 @@
 
 from __future__ import annotations
 
+import math
+from pathlib import Path
 from typing import Optional
 
 import arcade
 
 from records import AI, HUMAN, PLAYER_NAMES, compare_scores, format_score
-from ui.ai_control import AI_KEYBOARD_TEXT
+from ui.ai_control import AI_KEYBOARD_TEXT, model_action_labels
 from ui.session import (
     ALL_DONE,
     DEAD,
     DEATH_CAUSES,
     LEVEL_DONE,
+    Banner,
+    BlockCoin,
     FlagBanner,
     LevelResult,
     PlaySession,
@@ -53,6 +57,12 @@ BAR_BACK = (24, 26, 40)
 # Длинное имя модели обрезается, чтобы не вылезти из панели ИИ
 MODEL_NAME_LIMIT = 30
 
+# Панель ИИ справа сверху: ширина под самую длинную подпись действия
+# («вправо+прыжок» жирным), отступ от края окна и внутренний отступ
+AI_PANEL_WIDTH = 370
+AI_PANEL_MARGIN = 16
+AI_PANEL_PAD = 14
+
 # Строка сообщения об ошибке ИИ длиннее — обрезается
 MESSAGE_LINE_LIMIT = 96
 
@@ -64,6 +74,32 @@ FLAG_TITLES = {
     400: "НЕПЛОХО",
     100: "ЗАЦЕПИЛСЯ",
 }
+
+# Кадры вращения монеты, выбитой из блока «?»
+COIN_FRAMES = tuple(
+    Path(__file__).resolve().parent.parent / "resources" / "objects" / "Coins" / name
+    for name in ("img.png", "img_1.png", "img_2.png", "img_3.png")
+)
+COIN_SIZE = 32
+
+# Значки действий ИИ для полосы «все действия»: подпись из ai.features
+# режется по «+», каждая часть — стрелка. Неизвестное — первые буквы
+ACTION_GLYPHS = {
+    "стоять": "•",
+    "вправо": "→",
+    "влево": "←",
+    "прыжок": "↑",
+    "вниз": "↓",
+}
+
+# Высота полосы «все действия» на панели ИИ
+ACTION_STRIP_HEIGHT = 46
+
+# Ширина панелей итогов уровня и смерти (tools/check_ui проверяет, что
+# надписи в них влезают). Итоги: «× 10 из 29 · панцирь 12» (14 pt ≈ 236 px)
+# между «Бонус за время» и «15 400» без ужатия кегля
+RESULT_PANEL_WIDTH = 660
+DEATH_PANEL_WIDTH = 580
 
 # Расшифровка причин смерти для таблицы (коротко)
 DEATH_SHORT = {
@@ -172,6 +208,15 @@ def draw_hud(texts: TextPool, session: PlaySession, width: float, height: float)
     if lost:
         texts.draw("hud.lives.lost", "♥ " * lost, x + hearts.content_width, value_y, (90, 96, 120), 20, bold=True)
 
+    # Тайники: сколько секретных комнат найдено из всех на уровне
+    secrets_total = int((getattr(world, "totals", None) or {}).get("secrets", 0))
+    if secrets_total:
+        found = len(getattr(world, "rooms_visited", ()) or ())
+        sx = x + 118
+        texts.draw("hud.secrets.label", "ТАЙНИКИ", sx, label_y, MUTED, 11, bold=True)
+        color = GREEN if found >= secrets_total else (GOLD if getattr(world, "in_room", False) else TEXT)
+        texts.draw_shadowed("hud.secrets", f"{found}/{secrets_total}", sx, value_y, color, 21, bold=True)
+
     # Уровень — по центру
     cx = width / 2
     texts.draw(
@@ -234,11 +279,15 @@ def draw_ai_panel(texts: TextPool, session: PlaySession, info: Optional[dict],
         except (TypeError, ValueError):
             top_probs = []
 
-    # Ширина под самую длинную подпись действия («вправо+прыжок» жирным)
-    panel_w = 370
-    right = width - 16
-    left = right - panel_w
+    right = width - AI_PANEL_MARGIN
+    left = right - AI_PANEL_WIDTH
     top = height - HUD_BAR_HEIGHT - 12
+
+    # Все действия модели — полосой значков: их число берётся из
+    # ai.features.ACTION_LABELS, а не зашито (было 6, стало 7 с «вниз»)
+    prob_map = probs if isinstance(probs, dict) else {}
+    labels = action_labels(prob_map)
+    strip = ACTION_STRIP_HEIGHT if info and labels else 0
 
     # Высота панели по тому, что есть
     rows = 2 + len(top_probs)
@@ -250,11 +299,11 @@ def draw_ai_panel(texts: TextPool, session: PlaySession, info: Optional[dict],
         rows += 1
     if not info:
         rows += 1
-    bottom = top - 20 - rows * 24
+    bottom = top - 20 - rows * 24 - strip
 
     draw_panel(left, right, bottom, top)
 
-    pad = 14
+    pad = AI_PANEL_PAD
     y = top - 24
 
     if len(model) > MODEL_NAME_LIMIT:
@@ -279,6 +328,10 @@ def draw_ai_panel(texts: TextPool, session: PlaySession, info: Optional[dict],
         draw_bar(bar_left, bar_right, y + 5, 10, p, color)
         texts.draw(f"ai.prob.value{i}", f"{int(round(p * 100))}%", right - pad, y, TEXT, 12,
                    bold=i == 0, anchor_x="right")
+
+    if strip:
+        y -= strip
+        draw_action_strip(texts, labels, prob_map, action, left + pad, right - pad, y + 4)
 
     if confidence is not None:
         y -= 24
@@ -310,6 +363,62 @@ def draw_ai_panel(texts: TextPool, session: PlaySession, info: Optional[dict],
             expected_text = str(expected)
         texts.draw("ai.expected.label", "Ожидаемые очки", left + pad, y, MUTED, 12, bold=True)
         texts.draw("ai.expected", expected_text, right - pad, y, GREEN, 13, bold=True, anchor_x="right")
+
+
+def action_glyph(label: str) -> str:
+    """«вправо+прыжок» → «→↑», «вниз» → «↓»; незнакомое — первые 3 буквы."""
+
+    parts = [part.strip() for part in str(label).split("+")]
+    glyphs = [ACTION_GLYPHS.get(part) for part in parts]
+    if parts and all(glyphs):
+        return "".join(glyphs)
+    return str(label)[:3]
+
+
+def action_labels(probs: dict) -> list[str]:
+    """Все действия для полосы: порядок ai.features, плюс незнакомые из probs."""
+
+    labels = list(model_action_labels())
+    for name in probs:
+        if str(name) not in labels:
+            labels.append(str(name))
+    return labels
+
+
+def action_strip_layout(count: int, left: float, right: float) -> list[tuple[float, float]]:
+    """Колонки полосы действий: (левый, правый) край каждой, ровно в [left, right]."""
+
+    if count <= 0:
+        return []
+    column = (right - left) / count
+    return [(left + i * column, left + (i + 1) * column) for i in range(count)]
+
+
+def draw_action_strip(texts: TextPool, labels: list[str], probs: dict, action,
+                      left: float, right: float, bottom: float) -> None:
+    """Все действия в ширину панели: столбик вероятности и значок под ним.
+
+    Выбранное действие — золотым значком и акцентным столбиком.
+    """
+
+    bar_h = 20
+    for i, (label, (x0, x1)) in enumerate(zip(labels, action_strip_layout(len(labels), left, right))):
+        try:
+            p = max(0.0, min(1.0, float(probs.get(label, 0.0))))
+        except (TypeError, ValueError):
+            p = 0.0
+        chosen = label == action
+        cx = (x0 + x1) / 2
+        half = max(3.0, (x1 - x0) / 2 - 5)
+        bar_bottom = bottom + 14
+        arcade.draw_lrbt_rectangle_filled(cx - half, cx + half, bar_bottom, bar_bottom + bar_h, BAR_BACK)
+        if p > 0:
+            arcade.draw_lrbt_rectangle_filled(
+                cx - half, cx + half, bar_bottom, bar_bottom + bar_h * p,
+                ACCENT if chosen else (70, 88, 150),
+            )
+        texts.draw(f"ai.strip{i}", action_glyph(label), cx, bottom, GOLD if chosen else MUTED,
+                   12, bold=chosen, anchor_x="center")
 
 
 def draw_ai_message(texts: TextPool, message: str, width: float, height: float) -> None:
@@ -376,6 +485,46 @@ def draw_popups(texts: TextPool, popups: list[Popup]) -> None:
         )
 
 
+_coin_textures: list = []
+
+
+def _coin_frames() -> list:
+    if not _coin_textures:
+        for path in COIN_FRAMES:
+            try:
+                _coin_textures.append(arcade.load_texture(path))
+            except Exception:  # noqa: BLE001 — нет картинки — монету просто не рисуем
+                pass
+    return _coin_textures
+
+
+def draw_block_coins(coins: list[BlockCoin]) -> None:
+    """Монета из блока «?»: взлетает над блоком, вращаясь, и падает обратно."""
+
+    if not coins:
+        return
+    frames = _coin_frames()
+    if not frames:
+        return
+    for coin in coins:
+        frame = frames[int(coin.age * 14) % len(frames)]
+        arcade.draw_texture_rect(
+            frame,
+            arcade.XYWH(coin.x, coin.y + coin.height, COIN_SIZE, COIN_SIZE),
+            pixelated=True,
+        )
+
+
+def draw_pipe_hint(texts: TextPool, player, t: float) -> None:
+    """Игрок стоит на трубе-входе: над головой покачивается «↓»."""
+
+    if player is None or not player.visible:
+        return
+    bob = 4 * math.sin(t * 6)
+    texts.draw_shadowed("pipe.hint", "↓", player.center_x, player.top + 22 + bob,
+                        GOLD, 20, bold=True, anchor_x="center", anchor_y="center")
+
+
 def forget_popups(texts: TextPool, alive_serials: set[int]) -> None:
     """Надписи исчезнувших всплывашек больше не нужны — выкидываем из кэша."""
 
@@ -413,9 +562,67 @@ def draw_flag_banner(texts: TextPool, banner: FlagBanner, width: float, height: 
     )
 
 
+def draw_banner(texts: TextPool, banner: Banner, width: float, height: float) -> None:
+    """Крупно по центру: «СЕКРЕТНАЯ КОМНАТА!» и «Тайник 1 из 2»."""
+
+    t = banner.age
+    appear = min(t / 0.2, 1.0)
+    fade_at = max(banner.lifetime - 0.6, 0.0)
+    fade = 1.0 if t < fade_at else max(0.0, 1 - (t - fade_at) / 0.6)
+    alpha = 255 * appear * fade
+
+    cy = height * 0.68 + (1 - appear) * 20
+    texts.draw_shadowed("banner.title", banner.title, width / 2, cy, _with_alpha(GOLD, alpha), 40,
+                        bold=True, anchor_x="center", anchor_y="center", offset=3)
+    if banner.subtitle:
+        texts.draw_shadowed("banner.info", banner.subtitle, width / 2, cy - 46,
+                            _with_alpha(TEXT, alpha), 20, bold=True,
+                            anchor_x="center", anchor_y="center")
+
+
 # ============================================================
 # ЭКРАН ИТОГОВ УРОВНЯ
 # ============================================================
+
+
+# Что собрано из возможного: (название, ключ «взято» и «всего» в summary(),
+# «всего» в разбивке). По «?» считаются удары, а не блоки: в блоке их 1–4
+COLLECTED_ROWS = (
+    ("монеты", "coins", "coins_total", "coins_total"),
+    ("удары по «?»", "blocks", "block_hits_total", "blocks_total"),
+    ("враги", "enemies", "enemies_total", "enemies_total"),
+    ("тайники", "secrets", "secrets_total", "secrets_total"),
+)
+
+# Очки категории в разбивке (у тайников своих очков нет)
+COLLECTED_POINTS = {
+    "монеты": "coin_points",
+    "удары по «?»": "block_points",
+    "враги": "enemy_points",
+}
+
+
+def collected_rows(result: LevelResult) -> list[tuple[str, int, int]]:
+    """Что собрано из возможного: (название, взято, всего) — всего > 0.
+
+    Берётся из summary() мира (coins/coins_total и т. д.); у старых итогов
+    без этих полей — из разбивки, где «всего» нет, и строк нет.
+    """
+
+    summary = result.summary or {}
+    b = result.breakdown or {}
+    rows = []
+    for name, done_key, total_key, fallback in COLLECTED_ROWS:
+        total = summary.get(total_key, b.get(fallback))
+        if not total:
+            continue
+        done = summary.get(done_key, b.get(done_key, 0))
+        rows.append((name, int(done or 0), int(total)))
+    return rows
+
+
+def _of(done: int, total: Optional[int]) -> str:
+    return f"× {done} из {total}" if total else f"× {done}"
 
 
 def _record_lines(result: LevelResult) -> list[tuple[str, tuple]]:
@@ -473,7 +680,11 @@ def draw_level_result(texts: TextPool, session: PlaySession, result: LevelResult
     t = session.state_time
     arcade.draw_lrbt_rectangle_filled(0, width, 0, height, _with_alpha(DIM, 120 * _appear(t, 0.0, 0.3)))
 
-    panel_w, panel_h = 620, 500
+    b = result.breakdown
+    collected = {name: (done, total) for name, done, total in collected_rows(result)}
+    secrets = collected.get("тайники")
+
+    panel_w, panel_h = RESULT_PANEL_WIDTH, 500 + (34 if secrets else 0)
     left = width / 2 - panel_w / 2
     right = width / 2 + panel_w / 2
     top = height / 2 + panel_h / 2
@@ -485,28 +696,51 @@ def draw_level_result(texts: TextPool, session: PlaySession, result: LevelResult
     texts.draw_shadowed("res.title", who_text, cx, top - 46, GOLD, 30, bold=True, anchor_x="center")
     texts.draw("res.level", result.level_name, cx, top - 76, MUTED, 14, bold=True, anchor_x="center")
 
-    b = result.breakdown
     fraction = b.get("flag_fraction")
+
+    def counted(name: str, done_key: str) -> tuple[str, bool]:
+        done, total = collected.get(name, (b.get(done_key, 0), None))
+        return _of(done, total), bool(total) and done >= total
+
+    blocks_text, blocks_all = counted("удары по «?»", "blocks")
+    coins_text, coins_all = counted("монеты", "coins")
+    enemies_text, enemies_all = counted("враги", "enemies")
+    # Koopa в панцирь — тоже очки за врага, но враг ещё жив
+    if b.get("stomps"):
+        enemies_text += f" · панцирь {b['stomps']}"
+
+    # (название, подробность, очки или None, всё собрано)
     rows = [
-        ("Блоки «?»", f"× {b['blocks']}", b["block_points"]),
-        ("Монеты", f"× {b['coins']}", b["coin_points"]),
-        ("Враги", f"× {b['enemies']}", b["enemy_points"]),
-        ("Флаг", "—" if fraction is None else f"высота {int(round(fraction * 100))}%", b["flag_points"]),
-        ("Бонус за время", f"{b['time_seconds']} с × 20", b["time_bonus"]),
+        ("Удары по «?»", blocks_text, b["block_points"], blocks_all),
+        ("Монеты", coins_text, b["coin_points"], coins_all),
+        ("Враги", enemies_text, b["enemy_points"], enemies_all),
+    ]
+    if secrets:
+        rows.append(("Тайники", f"{secrets[0]} из {secrets[1]}", None, secrets[0] >= secrets[1]))
+    rows += [
+        ("Флаг", "—" if fraction is None else f"высота {int(round(fraction * 100))}%", b["flag_points"], False),
+        ("Бонус за время", f"{b['time_seconds']} с × 20", b["time_bonus"], False),
     ]
 
     pad = 40
+    # Колонка подробностей — сразу за самым длинным названием; подробность
+    # ужимается кеглем, чтобы не наехать на очки справа
+    names_w = max(texts.get(f"res.row{i}.name#w", row[0], 0, 0, TEXT, 16, bold=True).content_width
+                  for i, row in enumerate(rows))
+    detail_x = left + pad + names_w + 24
     y = top - 124
-    for i, (name, detail, points) in enumerate(rows):
+    for i, (name, detail, points, complete) in enumerate(rows):
         a = _appear(t, 0.2 + i * 0.12)
         if a <= 0:
             y -= 34
             continue
         alpha = 255 * a
         texts.draw(f"res.row{i}.name", name, left + pad, y, _with_alpha(TEXT, alpha), 16, bold=True)
-        texts.draw(f"res.row{i}.detail", detail, left + 290, y, _with_alpha(MUTED, alpha), 14)
-        texts.draw(f"res.row{i}.points", format_score(points), right - pad, y,
-                   _with_alpha(TEXT, alpha), 16, bold=True, anchor_x="right")
+        shown = texts.draw(f"res.row{i}.points", "—" if points is None else format_score(points), right - pad, y,
+                           _with_alpha(TEXT, alpha), 16, bold=True, anchor_x="right")
+        texts.draw_fitted(f"res.row{i}.detail", detail, detail_x, y,
+                          _with_alpha(GREEN if complete else MUTED, alpha), 14, bold=complete,
+                          max_width=right - pad - shown.content_width - 16 - detail_x, min_size=10)
         y -= 34
 
     # Черта и итог (счётчик «набегает»)
@@ -542,7 +776,9 @@ def draw_death(texts: TextPool, session: PlaySession, result: LevelResult,
     t = session.state_time
     arcade.draw_lrbt_rectangle_filled(0, width, 0, height, _with_alpha((40, 0, 0), 130 * _appear(t, 0.0, 0.4)))
 
-    panel_w, panel_h = 580, 400
+    collected = collected_rows(result)
+
+    panel_w, panel_h = DEATH_PANEL_WIDTH, 400 + (56 if collected else 0)
     left = width / 2 - panel_w / 2
     right = width / 2 + panel_w / 2
     top = height / 2 + panel_h / 2
@@ -562,16 +798,23 @@ def draw_death(texts: TextPool, session: PlaySession, result: LevelResult,
                         bold=True, anchor_x="center")
 
     b = result.breakdown
-    texts.draw(
-        "dead.breakdown",
-        f"блоки {format_score(b['block_points'])} · монеты {format_score(b['coin_points'])}"
-        f" · враги {format_score(b['enemy_points'])}",
-        cx, top - 252, MUTED, 13, anchor_x="center",
-    )
+    if collected:
+        # Таблица в строку: по колонке на категорию — собрано из возможного и
+        # очки. Одной строкой «Собрано: …» не влезало в панель
+        _draw_collected_columns(texts, collected, b, left + 24, right - 24, top - 256)
+        note_y = top - 330
+    else:
+        texts.draw(
+            "dead.breakdown",
+            f"удары по «?» {format_score(b['block_points'])} · монеты {format_score(b['coin_points'])}"
+            f" · враги {format_score(b['enemy_points'])}",
+            cx, top - 252, MUTED, 13, anchor_x="center",
+        )
+        note_y = top - 276
     texts.draw("dead.note", "Флаг и бонус за время после смерти не начисляются",
-               cx, top - 276, (130, 138, 166), 12, anchor_x="center")
+               cx, note_y, (130, 138, 166), 12, anchor_x="center")
 
-    y = top - 312
+    y = note_y - 36
     for i, (line, color) in enumerate(_record_lines(result)):
         texts.draw(f"dead.rec{i}", line, cx, y, color, 13, bold=i == 0, anchor_x="center")
         y -= 22
@@ -580,6 +823,25 @@ def draw_death(texts: TextPool, session: PlaySession, result: LevelResult,
     for i, line in enumerate(hints):
         texts.draw(f"dead.hint{i}", line, cx, bottom + 22 + 22 * (len(hints) - 1 - i),
                    MUTED, 13, anchor_x="center")
+
+
+def _draw_collected_columns(texts: TextPool, collected: list[tuple[str, int, int]], breakdown: dict,
+                            left: float, right: float, top: float) -> None:
+    """Колонки «МОНЕТЫ / 15 из 19 / +3 000» — всё собранное зелёным."""
+
+    column_w = (right - left) / len(collected)
+    fit = column_w - 12
+    for i, (name, done, total) in enumerate(collected):
+        x = left + column_w * (i + 0.5)
+        texts.draw_fitted(f"dead.col{i}.name", name.upper(), x, top, MUTED, 10, bold=True,
+                          anchor_x="center", max_width=fit, min_size=8)
+        texts.draw_fitted(f"dead.col{i}.count", f"{done} из {total}", x, top - 24,
+                          GREEN if done >= total else TEXT, 15, bold=True,
+                          anchor_x="center", max_width=fit, min_size=10)
+        points_key = COLLECTED_POINTS.get(name)
+        points = "—" if points_key is None else "+" + format_score(breakdown.get(points_key, 0))
+        texts.draw_fitted(f"dead.col{i}.points", points, x, top - 46, MUTED, 12,
+                          anchor_x="center", max_width=fit, min_size=9)
 
 
 # ============================================================
@@ -701,7 +963,15 @@ __all__ = [
     "draw_loading",
     "draw_popups",
     "forget_popups",
+    "draw_block_coins",
+    "draw_pipe_hint",
     "draw_flag_banner",
+    "draw_banner",
+    "draw_action_strip",
+    "action_glyph",
+    "action_labels",
+    "action_strip_layout",
+    "collected_rows",
     "draw_level_result",
     "draw_death",
     "draw_all_done",

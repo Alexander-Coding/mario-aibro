@@ -3,6 +3,8 @@
     .venv/bin/python -m tools.level_check maps/level_warmup.json
     .venv/bin/python -m tools.level_check --all            # все уровни манифеста
     .venv/bin/python -m tools.level_check --all --no-bot   # без прогона бота
+    .venv/bin/python -m tools.level_check --all --no-sim   # без прогона труб в GameWorld
+    .venv/bin/python -m tools.level_check --all --thorough # + замер тщательного прохода
     .venv/bin/python -m tools.level_check maps/x.json --json
 
 Что проверяется:
@@ -24,12 +26,35 @@
         колонок (яма ≤ 4 тайлов): обязательный путь от старта до флагштока
         должен существовать в этом режиме, иначе уровень не проходит проверку.
 
-(в) Прогон tools.heuristic_bot.HeuristicBot — для сведения, не требование.
+    Блок «?» твёрдый, как кирпич: он в стенах и обрывает прыжок; удар
+    по нему — упор головой снизу (засчитывается блок, под которым больше
+    головы). Каждый блок «?» должен выбиваться: под ним пол, низ блока на
+    3–4 тайла выше пола (до 7 выбивается, но неудобно), и с этого пола
+    можно дойти до флага.
 
-(г) Потолок очков: монеты и блоки «?», до которых можно добраться и после
-    этого дойти до флага; все враги; лучшая доля флагштока, которую даёт
-    физика (5000 — если можно схватиться за верх). Отдельно — бонус за
-    время при самом быстром пробеге (оценка сверху).
+(в) Секретные комнаты («warps»): труба-вход собрана и достижима со
+    старта; комната — закрытая коробка, точка появления внутри, устье
+    выхода на уровне пола и достижимо от точки появления; труба-выход
+    собрана, над ней 2+ тайла свободно, с неё можно дойти до флага.
+    Плюс прогон в настоящем GameWorld (без врагов): сценарный бот идёт
+    по осторожному пути графа к трубе, держит «вниз», в комнате идёт к
+    устью, вылезает из трубы-выхода и стоит на ней в фазе playing.
+    Прыжок в устье с зажатым «вправо» — это дошёл (фаза pipe_side);
+    приземлился не в ту клетку графа — путь перестраивается оттуда.
+
+(г) Прогон tools.heuristic_bot.HeuristicBot — для сведения, не требование.
+
+(д) Потолок очков: монеты и блоки «?», до которых можно добраться и после
+    этого дойти до флага (в комнатах — до устья); все враги; лучшая доля
+    флагштока, которую даёт физика (5000 — если можно схватиться за верх).
+    Отдельно — бонус за время при самом быстром пробеге (оценка сверху) и
+    время тщательного прохождения (путь, все удары «?», монеты, комнаты):
+    лимит должен покрывать его с запасом 30 %.
+
+(е) --thorough: тот же сценарный бот проходит уровень тщательно в
+    GameWorld (без врагов): слева направо собирает всё, что даёт граф,
+    каждый удар по каждому «?», с комнатой и без неё. Замер по таймеру
+    уровня; лимит меньше замера — ошибка, меньше замера × 1.3 — внимание.
 """
 
 from __future__ import annotations
@@ -46,11 +71,15 @@ from typing import Optional
 from tools.level_tiles import (
     ENEMY_KINDS,
     HALF,
+    THOROUGH_MARGIN,
     TILE,
     LevelSource,
+    block_hits,
+    is_solid,
     level_cells,
     load_level,
     on_grid,
+    thorough_seconds,
 )
 
 # ===============================================================
@@ -99,9 +128,15 @@ def flag_points(fraction: float) -> int:
     return FLAG_TIERS[-1][1]
 
 
-def score_block_hits(x: float, y: float) -> int:
-    """Число ударов в блоке «?» — та же формула, что в Objects/ScoreBlock.py."""
-    return random.Random(f"{float(x):.1f}:{float(y):.1f}").randint(1, 4)
+# Число ударов в блоке «?» — та же формула, что в Objects/ScoreBlock.py
+score_block_hits = block_hits
+
+# Блок «?» выбивается удобно, если его низ на столько тайлов выше пола
+BLOCK_GAP_OK = (3, 4)
+# Самый высокий блок, который ещё выбивается: голова стоящего игрока на
+# 1 тайл выше пола, прыжок поднимает её ещё на 6.8 — до 7.8 тайла. Низ
+# блока на 7 свободных рядах выше пола достаётся, на 8 — уже нет
+BLOCK_GAP_MAX = 7
 
 
 # ===============================================================
@@ -130,6 +165,7 @@ class Ceiling:
     flag: int = 0
     flag_fraction: float = 0.0
     time_bonus_max: int = 0
+    secrets: int = 0
 
     @property
     def total(self) -> int:
@@ -153,7 +189,11 @@ class LevelReport:
     safe_jumps: int = 0  # прыжков на осторожном пути
     ceiling: Ceiling = field(default_factory=Ceiling)
     min_run_seconds: float = 0.0
+    thorough_seconds: float = 0.0
     bot: Optional[dict] = None
+    warps: list[dict] = field(default_factory=list)  # итоги прогона труб в GameWorld
+    totals: Optional[dict] = None  # world.totals
+    tours: list[dict] = field(default_factory=list)  # тщательные проходы в GameWorld
     seconds: float = 0.0
 
     @property
@@ -184,8 +224,13 @@ class LevelReport:
                 "flag": self.ceiling.flag,
                 "flag_fraction": round(self.ceiling.flag_fraction, 3),
                 "time_bonus_max": self.ceiling.time_bonus_max,
+                "secrets": self.ceiling.secrets,
             },
             "min_run_seconds": round(self.min_run_seconds, 1),
+            "thorough_seconds": round(self.thorough_seconds, 1),
+            "totals": self.totals,
+            "warps": self.warps,
+            "tours": self.tours,
             "bot": self.bot,
             "issues": [issue.__dict__ for issue in self.issues],
         }
@@ -216,12 +261,12 @@ class Layout:
         return None if self.pole_x is None else int(self.pole_x // TILE)
 
 
-def check_structure(data: dict, report: LevelReport) -> Layout:
+def check_structure(data: dict, report: LevelReport, *, room: bool = False) -> Layout:
+    """Структура уровня (room=True — секретной комнаты: без финиша, старт в воздухе)."""
     cells = level_cells(data)
 
-    solid = {(c.tx, c.ty) for c in cells if c.kind in (
-        "ground", "brick", "hard", "stone", "block",
-        "tube_top_l", "tube_top_r", "tube_l", "tube_r")}
+    # Блок «?» — твёрдый (core/world.py: Area кладёт его в walls)
+    solid = {(c.tx, c.ty) for c in cells if is_solid(c.kind)}
     coins = {(c.tx, c.ty): COIN_POINTS for c in cells if c.kind == "coin"}
     blocks = {(c.tx, c.ty): score_block_hits(c.x, c.y) for c in cells if c.kind == "question"}
     enemies = [(c.kind, c.tx, c.ty) for c in cells if c.kind in ENEMY_KINDS]
@@ -267,7 +312,7 @@ def check_structure(data: dict, report: LevelReport) -> Layout:
             below = [ty for (tx, ty) in solid if tx == s.tx and ty < s.ty]
             if not below:
                 report.add("error", "start", f"под стартом ({s.tx},{s.ty}) пропасть")
-            else:
+            elif not room:  # в комнату игрок падает сверху — так и задумано
                 report.add("warning", "start", f"старт ({s.tx},{s.ty}) висит в воздухе")
 
     # --- Враги стоят на твёрдом
@@ -277,14 +322,15 @@ def check_structure(data: dict, report: LevelReport) -> Layout:
         elif (tx, ty - 1) not in solid:
             report.add("error", "enemy", f"{kind} ({tx},{ty}) не стоит на блоке")
 
-    # --- Монеты и «?» не внутри твёрдого (двойная клетка поймана выше)
-    for key in list(coins) + list(blocks):
+    # --- Монеты не внутри твёрдого (двойная клетка поймана выше)
+    for key in coins:
         if key in solid:
-            report.add("error", "overlap", f"объект в твёрдой клетке {key}")
+            report.add("error", "overlap", f"монета в твёрдой клетке {key}")
 
     layout = Layout(solid, coins, blocks, enemies, spawn)
 
-    _check_finish(cells, solid, layout, report)
+    if not room:
+        _check_finish(cells, solid, layout, report)
 
     top = max(c.ty for c in cells)
     if top > 21:
@@ -391,6 +437,10 @@ class TilePhysics:
     Левее x = 0 стены нет: ушедший влево за край земли падает (стеной край
     мира считает только физика врагов).
 
+    Блоки «?» твёрдые, удар засчитывается при упоре головой снизу — тому
+    блоку, под которым больше головы, если кирпич рядом не накрывает её
+    сильнее (core/world.py: GameWorld._head_bump).
+
     Твёрдые клетки хранятся битовыми масками по столбцам: столбец → число,
     где бит ty = 1, если клетка твёрдая. Игрок перекрывает не больше двух
     столбцов и двух рядов, поэтому проверка кадра — пара сдвигов и масок.
@@ -400,7 +450,7 @@ class TilePhysics:
         self.solid = layout.solid
         self.masks = _column_masks(layout.solid)
         self.coin_masks = _column_masks(layout.coins)
-        self.block_masks = _column_masks(layout.blocks)
+        self.block_cells = set(layout.blocks)
         self.pole_x = layout.pole_x
         self.pole_bottom = layout.pole_bottom
         self.pole_height = (
@@ -440,6 +490,24 @@ class TilePhysics:
     def standable(self, tx: int, ty: int) -> bool:
         return (tx, ty) not in self.solid and (tx, ty - 1) in self.solid
 
+    def bumped(self, x: float, row: int) -> Optional[tuple[int, int]]:
+        """Блок «?», по которому пришёлся удар головой в ряд row (или None)."""
+        eps = 1e-6
+        left, right = x - PLAYER_HALF_W, x + PLAYER_HALF_W
+        best, best_overlap, other = None, 0.0, 0.0
+        for col in range(int(left // TILE), int((right - eps) // TILE) + 1):
+            if (col, row) not in self.solid:
+                continue
+            overlap = min(right, (col + 1) * TILE) - max(left, col * TILE)
+            if (col, row) in self.block_cells:
+                if overlap > best_overlap:
+                    best, best_overlap = (col, row), overlap
+            else:
+                other = max(other, overlap)
+        if best is None or other > best_overlap:
+            return None
+        return best
+
     def fly(self, tx: int, ty: int, direction: int, speed: int, jump: bool,
             from_edge: bool = False) -> Flight:
         """Полёт с тайла (tx, ty): прыжок (jump) или сход с края.
@@ -465,7 +533,7 @@ class TilePhysics:
         blocks: set = set()
         masks = self.masks
         coin_masks = self.coin_masks
-        block_masks = self.block_masks
+        block_cells = self.block_cells
         pole_x = self.pole_x
         lowest_top = self.lowest_top
         eps = 1e-6
@@ -487,6 +555,11 @@ class TilePhysics:
             if rows:
                 if vy > 0:
                     y = rows[0] * TILE - hh
+                    # Упор головой: удар по блоку «?»
+                    if block_cells:
+                        hit = self.bumped(x, rows[0])
+                        if hit is not None:
+                            blocks.add(hit)
                 else:
                     y = (rows[1] + 1) * TILE + hh
                 vy = 0.0
@@ -516,14 +589,12 @@ class TilePhysics:
                     airborne = True
                     on_ground = False
 
-            # --- Монеты и удары по «?» (настоящий хитбокс без запаса)
+            # --- Монеты (настоящий хитбокс без запаса)
             cx0 = int((x - PLAYER_HALF_W) // TILE)
             cx1 = int((x + PLAYER_HALF_W - eps) // TILE)
             for col in (cx0, cx1) if cx0 != cx1 else (cx0,):
                 if col in coin_masks:
                     _collect(coin_masks[col], col, ty0, ty1, coins)
-                if vy > 0 and col in block_masks:
-                    _collect(block_masks[col], col, ty0, ty1, blocks)
 
             # --- Флагшток: захват по X, высота — доля штока
             if pole_x is not None and x + PLAYER_HALF_W >= pole_x - POLE_REACH \
@@ -584,6 +655,9 @@ class Edge:
     coins: frozenset = frozenset()
     blocks: frozenset = frozenset()
     fraction: float = 0.0
+    source: Optional[tuple[int, int]] = None
+    # Как повторить ребро: направление, скорость 0..4, прыжок, старт с края
+    move: tuple = (0, 0, False, False)
 
 
 @dataclass
@@ -602,7 +676,9 @@ class Reach:
     blocks: set
 
 
-def build_graph(layout: Layout) -> Reach:
+def build_graph(layout: Layout, goal_nodes: Optional[set] = None) -> Reach:
+    """Граф достижимости. goal_nodes — узлы, которые считаются финишем
+    вместо флагштока (в комнате — клетка перед устьем выхода)."""
     physics = TilePhysics(layout)
     pole_tx = layout.pole_tx
 
@@ -626,24 +702,28 @@ def build_graph(layout: Layout) -> Reach:
         for d in (1, -1):
             nxt = (tx + d, ty)
             if physics.standable(*nxt):
-                out.append(Edge(nxt, "walk", True))
+                out.append(Edge(nxt, "walk", True, source=node, move=(d, 4, False, False)))
             elif nxt not in layout.solid:
                 # Край: сход с разной скоростью
                 for speed in WALK_OFF_SPEEDS:
-                    out.append(_edge(physics.fly(tx, ty, d, speed, False), node, "drop", pole_tx))
+                    out.append(_edge(physics.fly(tx, ty, d, speed, False), node, "drop", pole_tx,
+                                     (d, speed, False, False)))
 
         for speed in JUMP_SPEEDS:
             for d in ((1,) if speed == 0 else (1, -1)):
-                out.append(_edge(physics.fly(tx, ty, d, speed, True), node, "jump", pole_tx))
+                out.append(_edge(physics.fly(tx, ty, d, speed, True), node, "jump", pole_tx,
+                                 (d, speed, True, False)))
                 # С края обрыва — дальше на полтайла
                 edge = (tx + d, ty)
                 if speed and not physics.standable(*edge) and edge not in layout.solid:
                     out.append(_edge(physics.fly(tx, ty, d, speed, True, from_edge=True),
-                                     node, "jump", pole_tx))
+                                     node, "jump", pole_tx, (d, speed, True, True)))
 
         # Идём в флагшток по земле
         if pole_tx is not None and tx + 1 == pole_tx and ty == (layout.base_ty or 0):
-            out.append(Edge(None, "goal", True, fraction=0.0))
+            out.append(Edge(None, "goal", True, fraction=0.0, source=node))
+        if goal_nodes and node in goal_nodes:
+            out.append(Edge(None, "goal", True, source=node))
 
         return [e for e in out if e is not None]
 
@@ -732,23 +812,656 @@ def build_graph(layout: Layout) -> Reach:
     )
 
 
-def _edge(flight: Flight, node, kind: str, pole_tx) -> Optional[Edge]:
+def _edge(flight: Flight, node, kind: str, pole_tx, move=(0, 0, False, False)) -> Optional[Edge]:
     tx, ty = node
     if flight.end == "goal":
         safe = pole_tx is not None and pole_tx - tx <= SAFE_SHIFT_TILES + 1
-        return Edge(None, "goal", safe, flight.coins, flight.blocks, flight.fraction)
+        return Edge(None, "goal", safe, flight.coins, flight.blocks, flight.fraction,
+                    source=node, move=move)
     if flight.end != "land" or flight.node is None or flight.node == node:
         if flight.end == "land" and flight.node == node and (flight.coins or flight.blocks):
             # Прыжок на месте за монетой или по блоку «?»
-            return Edge(node, kind, True, flight.coins, flight.blocks)
+            return Edge(node, kind, True, flight.coins, flight.blocks, source=node, move=move)
         return None
     nx, ny = flight.node
     safe = (ny - ty) <= SAFE_RISE_TILES and abs(nx - tx) <= SAFE_SHIFT_TILES
-    return Edge(flight.node, kind, safe, flight.coins, flight.blocks)
+    return Edge(flight.node, kind, safe, flight.coins, flight.blocks, source=node, move=move)
+
+
+def find_path(reach: Reach, start, target, safe_only: bool = True) -> Optional[list[Edge]]:
+    """Кратчайший путь по рёбрам графа от start до target (узлы) или None.
+    Сначала только осторожные рёбра; не нашлось — любые."""
+    if start is None or target is None:
+        return None
+    if start == target:
+        return []
+    parent: dict = {start: None}
+    queue = deque([start])
+    while queue:
+        node = queue.popleft()
+        for e in reach.edges.get(node, ()):
+            if e.target is None or e.target in parent or (safe_only and not e.safe):
+                continue
+            parent[e.target] = e
+            if e.target == target:
+                path = []
+                while parent[target] is not None:
+                    path.append(parent[target])
+                    target = parent[target].source
+                return path[::-1]
+            queue.append(e.target)
+    return find_path(reach, start, target, safe_only=False) if safe_only else None
 
 
 # ===============================================================
-# (в) ПРОГОН БОТА
+# (б) БЛОКИ «?»
+# ===============================================================
+
+
+def check_blocks(layout: Layout, reach: Reach, report: LevelReport, where: str = "") -> None:
+    """Каждый блок «?» выбивается: под ним пол, низ блока на 3–4 тайла выше
+    пола, с этого пола можно уйти дальше (к флагу или к устью комнаты), и
+    граф действительно находит удар по нему."""
+
+    useful = reach.forward & reach.backward
+    for (tx, ty) in sorted(layout.blocks):
+        floor = max((r for (x, r) in layout.solid if x == tx and r < ty), default=None)
+        name = f"{where}«?» ({tx},{ty})"
+        if floor is None:
+            report.add("error", "block", f"{name} над ямой: под ним нет пола, он только обрывает прыжки")
+            continue
+        gap = ty - floor - 1  # свободных рядов между полом и блоком
+        stand = (tx, floor + 1)
+        if gap < 1 or gap > BLOCK_GAP_MAX:
+            report.add("error", "block", f"{name}: до пола {gap} тайлов — не выбить")
+        elif not BLOCK_GAP_OK[0] <= gap <= BLOCK_GAP_OK[1]:
+            report.add("warning", "block", f"{name}: низ на {gap} тайла выше пола, удобно 3–4")
+        if (tx, ty) not in reach.blocks:
+            report.add("error", "block", f"{name} не выбить по графу (пол {stand} недостижим "
+                       "или с него не уйти дальше)")
+        elif stand not in useful:
+            report.add("warning", "block", f"{name} выбивается только с соседнего столбца")
+
+    # Блок «?» над разбегом у края ямы: прыжок с разбега от края (из центра
+    # крайнего тайла и с самого края) упирается в него головой, и игрок
+    # падает в яму — так на «Сокровищнице» умирал бот
+    physics = TilePhysics(layout)
+    warned = set()
+    for tx, ty in sorted(reach.forward & reach.backward):
+        edge = tx + 1
+        if (edge, ty) in layout.solid or (edge, ty - 1) in layout.solid:
+            continue
+        if any((edge, r) in layout.solid for r in range(ty)):
+            continue  # ниже есть опора — уступ, а не яма
+        for from_edge in (False, True):
+            hit = physics.fly(tx, ty, 1, 4, True, from_edge=from_edge).blocks - warned
+            for bx, by in sorted(hit):
+                warned.add((bx, by))
+                report.add("warning", "block", f"{where}«?» ({bx},{by}) обрывает прыжок с края "
+                           f"ямы ({tx},{ty})")
+
+
+# ===============================================================
+# (в) СЕКРЕТНЫЕ КОМНАТЫ
+# ===============================================================
+
+
+@dataclass
+class RoomCheck:
+    key: str
+    pipe: tuple[int, int]      # левый верхний тайл трубы-входа
+    exit: tuple[int, int]      # левый верхний тайл трубы-выхода
+    layout: Optional[Layout] = None
+    reach: Optional[Reach] = None
+    mouth: Optional[tuple[int, int]] = None  # нижний тайл устья
+    entry_node: Optional[tuple[int, int]] = None
+    exit_node: Optional[tuple[int, int]] = None  # клетка перед устьем
+    seconds: float = 0.0       # оценка тщательного прохода комнаты
+
+
+def _tile_point(value) -> tuple[int, int]:
+    if isinstance(value, dict):
+        value = (value["x"], value["y"])
+    return int(float(value[0]) // TILE), int(float(value[1]) // TILE)
+
+
+def _is_closed(layout: Layout, spawn_tile: tuple[int, int]) -> bool:
+    """Из точки появления по пустым клеткам не выйти за рамку твёрдых блоков."""
+    if not layout.solid:
+        return False
+    xs = [tx for tx, _ in layout.solid]
+    ys = [ty for _, ty in layout.solid]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    if spawn_tile in layout.solid:
+        return False
+    seen = {spawn_tile}
+    queue = deque([spawn_tile])
+    while queue:
+        tx, ty = queue.popleft()
+        if not (x0 <= tx <= x1 and y0 <= ty <= y1):
+            return False
+        for nxt in ((tx + 1, ty), (tx - 1, ty), (tx, ty + 1), (tx, ty - 1)):
+            if nxt not in seen and nxt not in layout.solid:
+                seen.add(nxt)
+                queue.append(nxt)
+    return True
+
+
+def check_warps(data: dict, layout: Layout, reach: Reach, report: LevelReport) -> list[RoomCheck]:
+    """Трубы-входы, комнаты и трубы-выходы (формат docs/CONTRACT.md)."""
+
+    cells = {(c.tx, c.ty): c.kind for c in level_cells(data)}
+    rooms: list[RoomCheck] = []
+
+    for index, spec in enumerate(data.get("warps") or []):
+        key = str(spec.get("id") or f"room{index + 1}")
+        try:
+            check = RoomCheck(key, _tile_point(spec["pipe"]), _tile_point(spec["exit"]))
+            room_data = spec["room"]
+        except (KeyError, TypeError, ValueError) as error:
+            report.add("error", "warp", f"{key}: запись warps без pipe/exit/room ({error!r})")
+            continue
+        rooms.append(check)
+        name = f"комната {key}"
+
+        # --- Труба-вход: шляпка из двух половин, на ней можно стоять
+        px, py = check.pipe
+        if cells.get((px, py)) != "tube_top_l" or cells.get((px + 1, py)) != "tube_top_r":
+            report.add("error", "warp", f"{name}: в pipe ({px},{py}) нет верха трубы "
+                       "(Tubes img.png + img_1.png)")
+        entry = [n for n in ((px, py + 1), (px + 1, py + 1)) if n in reach.forward]
+        if not entry:
+            report.add("error", "warp", f"{name}: на трубу-вход ({px},{py}) не попасть со старта")
+        else:
+            check.entry_node = entry[0]
+
+        # --- Труба-выход: собрана, над ней свободно, с неё дойти до флага
+        ex, ey = check.exit
+        if cells.get((ex, ey)) != "tube_top_l" or cells.get((ex + 1, ey)) != "tube_top_r":
+            report.add("error", "warp", f"{name}: в exit ({ex},{ey}) нет верха трубы")
+        blocked = [(tx, ty) for tx in (ex, ex + 1) for ty in (ey + 1, ey + 2) if (tx, ty) in layout.solid]
+        if blocked:
+            report.add("error", "warp", f"{name}: над трубой-выходом занято {blocked[0]} — "
+                       "нужно 2 свободных тайла")
+        if (ex, ey + 1) not in reach.backward and (ex + 1, ey + 1) not in reach.backward:
+            report.add("error", "warp", f"{name}: с трубы-выхода ({ex},{ey}) не дойти до флага")
+        if (px, py) == (ex, ey):
+            report.add("error", "warp", f"{name}: вход и выход — одна труба")
+        elif ex < px:
+            report.add("warning", "warp", f"{name}: труба-выход левее входа — возврат назад")
+        near = [(k, tx) for k, tx, ty in layout.enemies if abs(tx - ex) <= 3 and ty <= ey + 3]
+        if near:
+            report.add("warning", "warp", f"{name}: враг {near[0][0]} в столбце {near[0][1]} "
+                       "рядом с трубой-выходом")
+
+        # --- Комната
+        room_report = LevelReport(name, name)
+        room_layout = check_structure(room_data, room_report, room=True)
+        for issue in room_report.issues:
+            report.add(issue.level, issue.code, f"{name}: {issue.message}")
+        check.layout = room_layout
+        if room_layout.spawn is None:
+            continue
+        spawn_tile = (int(room_layout.spawn[0] // TILE), int(room_layout.spawn[1] // TILE))
+        if not _is_closed(room_layout, spawn_tile):
+            report.add("error", "room", f"{name}: не закрытая коробка — из точки появления "
+                       "можно выйти за стены")
+
+        room_cells = {(c.tx, c.ty): c.kind for c in level_cells(room_data)}
+        if room_data.get("exit") is None:
+            report.add("error", "room", f"{name}: нет exit — устья боковой трубы")
+            continue
+        mx, my = _tile_point(room_data["exit"])
+        check.mouth = (mx, my)
+        if (mx, my) not in room_layout.solid or (mx, my + 1) not in room_layout.solid:
+            report.add("error", "room", f"{name}: устье ({mx},{my}) не из двух твёрдых тайлов")
+        elif (room_cells.get((mx, my)), room_cells.get((mx, my + 1))) != ("side_mouth", "side_mouth_top"):
+            report.add("warning", "room", f"{name}: устье ({mx},{my}) не из текстур Tubes img_10/img_11")
+        if (mx - 1, my - 1) not in room_layout.solid or (mx - 1, my) in room_layout.solid:
+            report.add("error", "room", f"{name}: низ устья ({mx},{my}) не на уровне пола перед ним")
+            continue
+        check.exit_node = (mx - 1, my)
+
+        room_reach = build_graph(room_layout, goal_nodes={check.exit_node})
+        check.reach = room_reach
+        if room_reach.start is None:
+            report.add("error", "room", f"{name}: игрок из точки появления не встаёт на пол")
+        elif check.exit_node not in room_reach.forward:
+            report.add("error", "room", f"{name}: от точки появления не дойти до устья")
+        else:
+            check_blocks(room_layout, room_reach, report, where=f"{name}: ")
+            lost = len(room_layout.coins) - len(room_reach.coins)
+            if lost:
+                report.add("warning", "unreachable", f"{name}: не собрать монет {lost}")
+
+        run = abs(mx - spawn_tile[0])
+        check.seconds = thorough_seconds(run, sum(room_layout.blocks.values()),
+                                         len(room_layout.coins), extra_seconds=1.0)
+    return rooms
+
+
+def _strip_enemies(data: dict) -> dict:
+    """Копия уровня без врагов (и в комнатах): сценарий проверяет трубы, а не бой."""
+
+    def clean(objects):
+        return [o for o in objects if str(o.get("resource", "")).lower() not in ENEMY_KINDS]
+
+    quiet = dict(data)
+    quiet["objects"] = clean(data.get("objects", []))
+    quiet["warps"] = [
+        dict(w, room=dict(w["room"], objects=clean(w["room"].get("objects", []))))
+        for w in data.get("warps") or []
+    ]
+    return quiet
+
+
+# Прыжок отрывает от опоры в первом кадре; сход с края из середины тайла
+# на самой медленной скорости (1 px/кадр) — через ~30 кадров (16 px до
+# края + 13 px полуширины). Стоит дольше — ребро не началось
+FLIGHT_START_FRAMES = 45
+
+
+class ScriptedWalker:
+    """Сценарный бот в настоящем GameWorld: повторяет рёбра графа нажатиями.
+
+    Перед каждым ребром подходит к его началу пешком (шаг 4 px, остаток
+    меньше шага доводится сдвигом), затем подаёт те же нажатия, что
+    симуляция, и сверяет, куда приземлился.
+
+    Цель пути может быть не клеткой, а фазой мира (`finish`): прыжок к
+    устью с зажатым «вправо» законно кончается заставкой pipe_side — это
+    дошёл, а не сбой. Приземлился не туда (arcade ставит игрока на угол
+    блока на ряд выше, чем граф) — путь перестраивается от места
+    приземления по тому же графу, не больше REPLANS раз.
+    """
+
+    REPLANS = 3
+
+    def __init__(self, world, physics: TilePhysics):
+        self.world = world
+        self.physics = physics
+        self.replans = 0
+
+    def node(self) -> Optional[tuple[int, int]]:
+        player = self.world.player
+        return self.physics._landing_node(player.center_x, player.bottom)
+
+    def settle(self, limit: int = 90) -> Optional[tuple[int, int]]:
+        """Постоять без нажатий, пока игрок не встанет на клетку графа
+        (после удара головой о блок он на миг «на опоре» ещё в воздухе)."""
+        from core.world import Inputs, PLAYING
+
+        world = self.world
+        for _ in range(limit):
+            node = self.node()
+            if node is not None and world.on_ground:
+                return node
+            world.step(Inputs())
+            if world.phase != PLAYING:
+                return None
+        return self.node()
+
+    def walk_to(self, x: float, limit: int = 600, finish: tuple = ()) -> bool:
+        """Дойти до x. True — дошёл или мир ушёл в фазу из finish."""
+        from core.world import Inputs, PLAYING
+
+        world = self.world
+        for _ in range(limit):
+            dx = x - world.player.center_x
+            if abs(dx) < RUN_SPEED:
+                world.player.center_x = x
+                return True
+            world.step(Inputs(right=dx > 0, left=dx < 0))
+            if world.phase in finish:
+                return True
+            if world.phase != PLAYING:
+                return False
+        return False
+
+    def follow(self, path: list[Edge], reach: Optional[Reach] = None,
+               target: Optional[tuple[int, int]] = None, finish: tuple = ()) -> Optional[str]:
+        """Пройти путь. None — дошёл (или мир ушёл в фазу из finish), иначе —
+        что пошло не так. С reach и target промах приземления не сбой:
+        путь до target строится заново от клетки, куда встал игрок."""
+        from core.world import FLAGPOLE, Inputs, PLAYING
+
+        world = self.world
+        steps = deque(path)
+        tries = 0
+        while steps:
+            e = steps.popleft()
+            d, speed, jump, from_edge = e.move
+            tx, ty = e.source
+            if e.kind == "walk":
+                if not self.walk_to(e.target[0] * TILE + HALF, finish=finish):
+                    return f"сошёл с пути на шаге {e.source}→{e.target}"
+                if world.phase in finish:
+                    return None
+                continue
+            x = float(tx * TILE + HALF)
+            if from_edge:
+                x = float((tx + 1) * TILE + EDGE_OVERHANG if d > 0 else tx * TILE - EDGE_OVERHANG)
+            if not self.walk_to(x, finish=finish):
+                return f"не дошёл до начала прыжка {e.source}"
+            if world.phase in finish:
+                return None
+            here = self.node()
+            if here == e.source:
+                airborne = False
+                for frame in range(MAX_FLIGHT_FRAMES):
+                    press = (frame + 1) * speed // 4 - frame * speed // 4
+                    world.step(Inputs(right=bool(press and d > 0), left=bool(press and d < 0),
+                                      jump=jump and frame == 0))
+                    if world.phase in finish:
+                        return None
+                    if world.phase not in (PLAYING, FLAGPOLE):
+                        return f"прыжок {e.source}→{e.target}: фаза {world.phase}"
+                    if not world.on_ground:
+                        airborne = True
+                    elif airborne and world.player.change_y <= 0:
+                        break
+                    elif not airborne and frame >= FLIGHT_START_FRAMES:
+                        break  # так и не оторвался от опоры — не идти вслепую дальше
+                landed = self.node() or self.settle()
+                if landed == e.target:
+                    continue
+                miss = f"прыжок {e.source}→{e.target}: приземлился в {landed}"
+            else:
+                # По дороге к началу ребра сошёл с опоры (стоял на углу блока)
+                landed = here
+                miss = f"к прыжку {e.source}→{e.target} подошёл из {landed}"
+            if reach is None or target is None or landed is None:
+                return miss
+            if tries >= self.REPLANS:
+                return f"{miss} (перестроек пути уже {tries})"
+            detour = find_path(reach, landed, target)
+            if detour is None:
+                return f"{miss}, оттуда нет пути к {target}"
+            tries += 1
+            self.replans += 1
+            steps = deque(detour)
+        return None
+
+    def enter_pipe(self, warp) -> Optional[str]:
+        """Со шляпки трубы-входа: встать на середину, «вниз», дождаться пола комнаты."""
+        from core.world import PIPE_DOWN, Inputs, PLAYING
+
+        world = self.world
+        if not self.walk_to(warp.x):
+            return "не встал на середину трубы"
+        for _ in range(10):
+            world.step(Inputs(down=True))
+            if world.phase != PLAYING:
+                break
+        if world.phase != PIPE_DOWN:
+            return f"«вниз» на трубе не сработал (фаза {world.phase})"
+        for _ in range(600):
+            world.step(Inputs())
+            if world.phase == PLAYING and world.in_room and world.on_ground:
+                return None
+        return f"не оказался на полу комнаты (фаза {world.phase})"
+
+    def leave_room(self, check: "RoomCheck", warp) -> Optional[str]:
+        """Из комнаты к устью, «вправо» в устье, вылезти на трубу-выход."""
+        from core.world import PIPE_SIDE, Inputs, PLAYING
+
+        world = self.world
+        here = self.node()
+        path = find_path(check.reach, here, check.exit_node)
+        if path is None:
+            return f"в комнате нет пути от {here} к устью"
+        problem = self.follow(path, check.reach, check.exit_node, finish=(PIPE_SIDE,))
+        if problem is not None:
+            return problem
+        if world.phase == PLAYING:
+            # Последнее ребро — шаг: у устья остановились, дожать «вправо»
+            for _ in range(120):
+                world.step(Inputs(right=True))
+                if world.phase != PLAYING:
+                    break
+        if world.phase != PIPE_SIDE:
+            return f"устье не приняло игрока (фаза {world.phase})"
+        for _ in range(600):
+            world.step(Inputs())
+            if world.phase == PLAYING:
+                break
+        player = world.player
+        if world.in_room or world.phase != PLAYING:
+            return f"не вылез в уровень (фаза {world.phase})"
+        if abs(player.bottom - warp.exit_top) > 1.0 or abs(player.center_x - warp.exit_x) > 2.0:
+            return (f"вылез не на трубу-выход: ({player.center_x:.0f}, {player.bottom:.0f}) "
+                    f"вместо ({warp.exit_x:.0f}, {warp.exit_top:.0f})")
+        return None
+
+
+def simulate_warps(data: dict, layout: Layout, reach: Reach, rooms: list[RoomCheck]) -> list[dict]:
+    """Прогон каждой трубы в GameWorld: к трубе-входу, «вниз», в комнате
+    к устью, «вправо» в устье, вылезти из трубы-выхода и встать на неё."""
+
+    from core.world import PLAYING, GameWorld, Inputs
+
+    quiet = _strip_enemies(data)
+    physics = TilePhysics(layout)
+    results = []
+    for index, check in enumerate(rooms):
+        result = {"room": check.key, "ok": False, "message": ""}
+        results.append(result)
+        if check.entry_node is None or check.reach is None or check.exit_node is None:
+            result["message"] = "не проверена: структура с ошибками"
+            continue
+
+        world = GameWorld(quiet)
+        warp = world.warps[index]
+        walker = ScriptedWalker(world, physics)
+
+        # --- К трубе-входу по осторожному пути, «вниз»
+        path = find_path(reach, reach.start, check.entry_node)
+        problem = ("нет пути до трубы-входа" if path is None
+                   else walker.follow(path, reach, check.entry_node))
+        if problem is None:
+            problem = walker.enter_pipe(warp)
+        result["enter_frame"] = world.frame
+
+        # --- По комнате к устью, в трубу и из трубы-выхода
+        if problem is None:
+            room_walker = ScriptedWalker(world, TilePhysics(check.layout))
+            problem = room_walker.leave_room(check, warp)
+            walker.replans += room_walker.replans
+        if problem is None:
+            # Постоять на трубе: не падает, не умирает
+            for _ in range(30):
+                world.step(Inputs())
+            if world.phase != PLAYING or abs(world.player.bottom - warp.exit_top) > 1.0:
+                problem = "не удержался на трубе-выходе"
+
+        result.update(
+            ok=problem is None, message=problem or "OK", frames=world.frame, replans=walker.replans,
+            secrets=world.stats["secret"], coins=world.stats["coin"], blocks=world.stats["block"],
+        )
+    return results
+
+
+def world_totals(data: dict) -> dict:
+    from core.world import GameWorld
+
+    return dict(GameWorld(data).totals)
+
+
+# ===============================================================
+# (в') ТЩАТЕЛЬНЫЙ ПРОХОД В GameWorld
+# ===============================================================
+# Замер вместо формулы thorough_seconds: сценарный бот идёт по графу и
+# жадно, от ближней цели к дальней, берёт всё, что граф позволяет взять,
+# не теряя пути к флагу: монеты, каждый удар по каждому «?», комнату.
+# Враги убраны (сценарий не умеет драться), поэтому замер — нижняя
+# граница: лимит должен быть не меньше замера × THOROUGH_MARGIN, и запас
+# сверх него уходит на врагов и на ошибки агента.
+
+TOUR_TARGETS = 600  # сколько целей (монета/удар) бот пытается взять за проход
+TOUR_WINDOW = 12   # ширина окна в столбцах: в нём всё собрать, потом дальше
+
+
+def _tile_of(sprite) -> tuple[int, int]:
+    return int(sprite.center_x // TILE), int(sprite.center_y // TILE)
+
+
+def _backtrack(parent: dict, node, last: Edge) -> list[Edge]:
+    path = [last]
+    while parent[node] is not None:
+        path.append(parent[node])
+        node = parent[node].source
+    return path[::-1]
+
+
+def _nearest_loot(reach: Reach, start, coins: set, hits: set, cols: range,
+                  skip: set) -> Optional[list[Edge]]:
+    """Кратчайший по числу рёбер путь, последнее ребро которого берёт монету
+    или бьёт блок «?» с ударами в столбцах cols. Только через узлы, откуда
+    дальше можно уйти (reach.backward)."""
+
+    parent: dict = {start: None}
+    queue = deque([start])
+    while queue:
+        node = queue.popleft()
+        for e in reach.edges.get(node, ()):
+            if e.target is None or e.target not in reach.backward:
+                continue
+            loot = [c for c in e.coins if c in coins and c[0] in cols]
+            loot += [b for b in e.blocks if b in hits and b[0] in cols]
+            if loot and (e.source, e.move, e.target) not in skip:
+                return _backtrack(parent, node, e)
+            if e.target not in parent:
+                parent[e.target] = e
+                queue.append(e.target)
+    return None
+
+
+def _goal_path(reach: Reach, start) -> Optional[list[Edge]]:
+    """Путь до штока: до первого ребра-финиша, сначала по осторожным рёбрам."""
+
+    for safe_only in (True, False):
+        parent: dict = {start: None}
+        queue = deque([start])
+        while queue:
+            node = queue.popleft()
+            for e in reach.edges.get(node, ()):
+                if safe_only and not e.safe:
+                    continue
+                if e.target is None:
+                    return _backtrack(parent, node, e)
+                if e.target not in parent:
+                    parent[e.target] = e
+                    queue.append(e.target)
+    return None
+
+
+def _sweep(walker: ScriptedWalker, reach: Reach, cols: range) -> Optional[str]:
+    """Собрать в текущей части уровня всё, что даёт граф в столбцах cols.
+
+    Слева направо окнами по TOUR_WINDOW столбцов, как идёт игрок: внутри
+    окна — ближайшая цель, назад за окно не возвращается. Промах (ребро
+    ничего не дало) второй раз не пробуется."""
+    from core.world import PLAYING
+
+    world = walker.world
+    skip: set = set()  # рёбра, после которых ничего не прибавилось
+    targets = 0
+    for a in range(cols.start, cols.stop, TOUR_WINDOW):
+        window = range(a, min(a + TOUR_WINDOW, cols.stop))
+        while targets < TOUR_TARGETS:
+            node = walker.node() or walker.settle()
+            if node is None:
+                return "игрок не на опоре"
+            coins = {_tile_of(o) for o in world.objects if type(o).__name__ == "Coin"}
+            hits = {_tile_of(b) for b in world.blocks if b.state > 0}
+            path = _nearest_loot(reach, node, coins, hits, window, skip)
+            if path is None:
+                break
+            targets += 1
+            before = world.stats["coin"] + world.stats["block"]
+            last = path[-1]
+            problem = walker.follow(path, reach, last.target)
+            if world.phase != PLAYING:
+                return problem or f"фаза {world.phase}"
+            if problem is not None or world.stats["coin"] + world.stats["block"] == before:
+                skip.add((last.source, last.move, last.target))
+    return None if targets < TOUR_TARGETS else f"не уложился в {TOUR_TARGETS} целей"
+
+
+def thorough_run(data: dict, layout: Layout, reach: Reach, rooms: list[RoomCheck],
+                 use_rooms: bool = True) -> dict:
+    """Тщательный проход в GameWorld без врагов: до трубы-входа собрать всё
+    слева от неё, комната целиком, после трубы-выхода — всё до флага.
+    use_rooms=False — без комнат, весь уровень подряд. Итог — время по
+    таймеру уровня (заставки его не тратят) и что собрано."""
+
+    from core.world import FLAGPOLE, PLAYING, GameWorld, Inputs
+
+    world = GameWorld(_strip_enemies(data), time_limit=999)
+    walker = ScriptedWalker(world, TilePhysics(layout))
+    end = max(tx for tx, _ in layout.solid) + 1 if layout.solid else 0
+    left = reach.start[0] if reach.start else 0
+    problem = None
+
+    for index, check in enumerate(rooms if use_rooms else []):
+        if check.entry_node is None or check.reach is None or check.exit_node is None:
+            continue
+        if check.pipe[0] < left:
+            continue  # труба уже позади
+        warp = world.warps[index]
+        problem = _sweep(walker, reach, range(left, check.pipe[0] + 2))
+        if problem is None:
+            path = find_path(reach, walker.node(), check.entry_node)
+            problem = ("нет пути до трубы-входа" if path is None
+                       else walker.follow(path, reach, check.entry_node))
+        if problem is None:
+            problem = walker.enter_pipe(warp)
+        if problem is None:
+            room_walker = ScriptedWalker(world, TilePhysics(check.layout))
+            problem = _sweep(room_walker, check.reach, range(-1, 1000))
+            if problem is None:
+                problem = room_walker.leave_room(check, warp)
+            walker.replans += room_walker.replans
+        if problem is not None:
+            problem = f"комната {check.key}: {problem}"
+            break
+        left = check.exit[0]
+
+    if problem is None:
+        problem = _sweep(walker, reach, range(left, end))
+    tries = 0
+    while problem is None:
+        path = _goal_path(reach, walker.node() or walker.settle())
+        if path is None:
+            problem = "нет пути до штока"
+            break
+        miss = walker.follow(path, finish=(FLAGPOLE,))
+        if miss is None:
+            break
+        if world.phase != PLAYING or tries >= ScriptedWalker.REPLANS:
+            problem = f"к штоку: {miss}"
+            break
+        tries += 1  # промах по лестнице к штоку — ещё раз от клетки, где встал
+        walker.replans += 1
+    seconds = world.time_limit - world.time_left  # на штоке таймер встаёт
+    if problem is None:
+        while not world.done and world.frame < 60 * 60 * 20:
+            world.step(Inputs())
+        if not world.won:
+            problem = f"не дошёл до замка (фаза {world.phase})"
+
+    s = world.summary()
+    return {
+        "ok": problem is None, "message": problem or "OK", "rooms": use_rooms,
+        "seconds": round(seconds, 1),
+        "coins": s["coins"], "coins_total": s["coins_total"],
+        "blocks": s["blocks"], "block_hits_total": s["block_hits_total"],
+        "secrets": s["secrets"], "replans": walker.replans,
+    }
+
+
+# ===============================================================
+# (г) ПРОГОН БОТА
 # ===============================================================
 
 
@@ -773,7 +1486,8 @@ def run_bot(data: dict, name: str, time_limit: Optional[float]) -> dict:
 
 
 def check_level(level: LevelSource, *, name: Optional[str] = None,
-                time_limit: Optional[float] = None, bot: bool = True) -> LevelReport:
+                time_limit: Optional[float] = None, bot: bool = True,
+                sim: bool = True, thorough: bool = False) -> LevelReport:
     t0 = time.perf_counter()
     data = load_level(level)
     source = level if isinstance(level, str) else (data.get("name") or "<dict>")
@@ -806,6 +1520,11 @@ def check_level(level: LevelSource, *, name: Optional[str] = None,
             report.add("warning", "trap",
                        f"{len(dead_ends)} мест, откуда не выбраться к флагу (столбцы {cols[:8]}…)")
 
+        check_blocks(layout, reach, report)
+        rooms = check_warps(data, layout, reach, report)
+        if not rooms:
+            report.add("warning", "warp", "нет секретной комнаты (ключ warps)")
+
         c = report.ceiling
         c.coins = len(reach.coins)
         c.coins_total = len(layout.coins)
@@ -821,6 +1540,18 @@ def check_level(level: LevelSource, *, name: Optional[str] = None,
             report.add("warning", "unreachable",
                        f"не собрать: монет {lost_coins}, блоков «?» {lost_blocks}")
 
+        # Комнаты — в потолок очков
+        for room in rooms:
+            if room.layout is None:
+                continue
+            c.coins_total += len(room.layout.coins)
+            c.block_hits_total += sum(room.layout.blocks.values())
+            c.enemies += len(room.layout.enemies)
+            c.secrets += 1
+            if room.reach is not None:
+                c.coins += len(room.reach.coins)
+                c.block_hits += sum(room.layout.blocks[b] for b in room.reach.blocks)
+
         # Самый быстрый пробег: от старта до двери на 4 px/кадр
         door = layout.door_x or layout.pole_x
         report.min_run_seconds = max(door - layout.spawn[0], 0.0) / RUN_SPEED / 60
@@ -829,6 +1560,44 @@ def check_level(level: LevelSource, *, name: Optional[str] = None,
         if limit < report.min_run_seconds * 1.3:
             report.add("warning", "time",
                        f"лимит {limit:g} с при минимальном пробеге {report.min_run_seconds:.0f} с")
+
+        # Тщательное прохождение: весь путь, все удары «?», монеты, комнаты
+        report.thorough_seconds = thorough_seconds(
+            max(door - layout.spawn[0], 0.0) / TILE, sum(layout.blocks.values()),
+            len(layout.coins), sum(room.seconds for room in rooms),
+        )
+        if limit < report.thorough_seconds * THOROUGH_MARGIN:
+            report.add("error", "time",
+                       f"лимит {limit:g} с: тщательное прохождение ~{report.thorough_seconds:.0f} с, "
+                       f"нужно ≥ {report.thorough_seconds * THOROUGH_MARGIN:.0f} с (запас 30 %)")
+
+        if sim:
+            try:
+                report.totals = world_totals(data)
+                report.warps = simulate_warps(data, layout, reach, rooms)
+            except Exception as error:
+                report.add("error", "sim", f"прогон в GameWorld упал: {error!r}")
+            for result in report.warps:
+                if not result["ok"]:
+                    report.add("error", "sim", f"труба {result['room']}: {result['message']}")
+
+        if thorough:
+            # Замер тщательного прохода: с комнатами и без (весь уровень подряд)
+            variants = (True, False) if rooms else (True,)
+            try:
+                report.tours = [thorough_run(data, layout, reach, rooms, use_rooms=v) for v in variants]
+            except Exception as error:
+                report.add("error", "tour", f"тщательный проход упал: {error!r}")
+            for tour in report.tours:
+                label = "с комнатой" if tour["rooms"] and rooms else "без комнаты"
+                if not tour["ok"]:
+                    report.add("warning", "tour", f"тщательный проход {label}: {tour['message']}")
+                elif limit < tour["seconds"]:
+                    report.add("error", "time", f"лимит {limit:g} с: тщательный проход {label} "
+                               f"занял {tour['seconds']:.0f} с — агент умрёт по таймеру")
+                elif limit < tour["seconds"] * THOROUGH_MARGIN:
+                    report.add("warning", "time", f"лимит {limit:g} с: тщательный проход {label} "
+                               f"{tour['seconds']:.0f} с, запас меньше 30 % (враги не в счёт)")
 
     if bot:
         try:
@@ -846,7 +1615,8 @@ def format_report(report: LevelReport) -> str:
         f"== {report.source} — «{report.name}»: {report.width_tiles} тайлов, "
         f"лимит {report.time_limit if report.time_limit is not None else '—'} с"
     ]
-    structure_errors = [i for i in report.issues if i.level == "error" and i.code != "reach"]
+    structure_errors = [i for i in report.issues
+                        if i.level == "error" and i.code not in ("reach", "time", "sim")]
     lines.append("структура: " + ("OK" if not structure_errors else f"{len(structure_errors)} ошибок"))
     lines.append(
         "проходимость: "
@@ -860,12 +1630,39 @@ def format_report(report: LevelReport) -> str:
         f"(доля {c.flag_fraction:.2f}); +время до {c.time_bonus_max} "
         f"(пробег ≥ {report.min_run_seconds:.0f} с) → {c.total_with_time}"
     )
+    lines.append(
+        f"тщательно: ~{report.thorough_seconds:.0f} с (путь, все удары «?», монеты, комнаты: "
+        f"{c.secrets}); лимит {report.time_limit or 200:g} с = "
+        f"×{(report.time_limit or 200) / max(report.thorough_seconds, 1):.2f}"
+    )
+    if report.totals is not None:
+        t = report.totals
+        lines.append(f"world.totals: монет {t['coins']}, ударов «?» {t['block_hits']}, "
+                     f"врагов {t['enemies']}, секретов {t['secrets']}")
+    for w in report.warps:
+        lines.append(
+            f"труба {w['room']}: " + (
+                f"прогон OK — {w['frames']} кадров, в комнате с кадра {w.get('enter_frame')}, "
+                f"секретов {w['secrets']}"
+                + (f", путь перестроен {w['replans']} раз" if w.get("replans") else "")
+                if w["ok"] else f"ОШИБКА — {w['message']}")
+        )
+    limit = report.time_limit or 200
+    for t in report.tours:
+        lines.append(
+            f"тщательный проход {'с комнатой' if t['rooms'] and report.ceiling.secrets else 'без комнаты'}: "
+            + (f"{t['seconds']:.0f} с (лимит ×{limit / max(t['seconds'], 1):.2f}), " if t["ok"]
+               else f"СБОЙ — {t['message']}; ")
+            + f"монет {t['coins']}/{t['coins_total']}, ударов «?» {t['blocks']}/{t['block_hits_total']}, "
+            f"секретов {t['secrets']}"
+        )
     if report.bot is not None:
         b = report.bot
         if b.get("won"):
             lines.append(
-                f"бот: прошёл, {b['score']} очков (флаг {b['flag_bonus']}, время {b['time_bonus']}, "
-                f"монет {b['coins']}, блоков {b['blocks']}, врагов {b['enemies']})"
+                f"бот: прошёл, {b['score']} очков = в уровне {b['score'] - b['flag_bonus'] - b['time_bonus']} "
+                f"+ флаг {b['flag_bonus']} + время {b['time_bonus']} ({b['time_left']:.0f} с) "
+                f"(монет {b['coins']}, блоков {b['blocks']}, врагов {b['enemies']})"
             )
         else:
             lines.append(
@@ -877,22 +1674,25 @@ def format_report(report: LevelReport) -> str:
 
 
 def format_table(reports: list[tuple[str, str, LevelReport]]) -> str:
-    head = (f"{'id':<14}{'тайлов':>7}{'лимит':>7} {'split':<6}{'стр.':<5}{'путь':<6}"
-            f"{'потолок':>9}{'флаг':>6}  бот")
+    head = (f"{'id':<14}{'тайлов':>7}{'лимит':>7}{'тщат.':>6}{'замер':>6} {'split':<6}{'стр.':<5}{'путь':<6}"
+            f"{'трубы':<7}{'потолок':>9}{'флаг':>6}  бот")
     lines = [head, "-" * len(head)]
     for level_id, split, r in reports:
         b = r.bot
         if b is None:
             bot = "—"
         elif b.get("won"):
-            bot = f"прошёл {b['score']}"
+            bot = f"прошёл {b['score']} (в уровне {b['score'] - b['flag_bonus'] - b['time_bonus']})"
         else:
             bot = f"{b.get('death')} {b['progress']:.0%}, {b['score']}"
         structure_ok = not any(i.level == "error" and i.code != "reach" for i in r.issues)
+        pipes = f"{sum(w['ok'] for w in r.warps)}/{r.ceiling.secrets}"
+        measured = [t["seconds"] for t in r.tours if t["ok"]]
+        tour = f"{max(measured):.0f}" if measured else "—"
         lines.append(
-            f"{level_id:<14}{r.width_tiles:>7}{(r.time_limit or 0):>7g} {split:<6}"
-            f"{'OK' if structure_ok else 'ОШ':<5}{'OK' if r.safe_path else 'НЕТ':<6}"
-            f"{r.ceiling.total:>9}{r.ceiling.flag:>6}  {bot}"
+            f"{level_id:<14}{r.width_tiles:>7}{(r.time_limit or 0):>7g}{r.thorough_seconds:>6.0f}{tour:>6} "
+            f"{split:<6}{'OK' if structure_ok else 'ОШ':<5}{'OK' if r.safe_path else 'НЕТ':<6}"
+            f"{pipes:<7}{r.ceiling.total:>9}{r.ceiling.flag:>6}  {bot}"
         )
     return "\n".join(lines)
 
@@ -1043,6 +1843,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("levels", nargs="*", help="пути к JSON уровней")
     parser.add_argument("--all", action="store_true", help="все уровни из maps/levels.json")
     parser.add_argument("--no-bot", action="store_true", help="не гонять HeuristicBot")
+    parser.add_argument("--no-sim", action="store_true",
+                        help="не гонять трубы в GameWorld (только граф)")
+    parser.add_argument("--thorough", action="store_true",
+                        help="замерить тщательный проход в GameWorld (долго: минуты на уровень)")
     parser.add_argument("--json", action="store_true", help="вывод в JSON")
     parser.add_argument("--verify-physics", action="store_true",
                         help="сверить физику проверки с GameWorld")
@@ -1070,7 +1874,8 @@ def main(argv: list[str] | None = None) -> int:
 
     reports = []
     for level_id, split, path, name, limit in jobs:
-        report = check_level(path, name=name, time_limit=limit, bot=not args.no_bot)
+        report = check_level(path, name=name, time_limit=limit, bot=not args.no_bot,
+                             sim=not args.no_sim, thorough=args.thorough)
         reports.append((level_id, split, report))
         if not args.json:
             print(format_report(report))

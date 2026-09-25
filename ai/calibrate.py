@@ -1,10 +1,13 @@
 """Калибровка ответов модели — то, что у Jev называется calibrated decisions.
 
 После обучения политики:
-1. играем полные эпизоды итоговой политикой и записываем для каждого
-   решения признаки кодировщика, «погиб ли в ближайшие 2 с» и «сколько
-   очков набрано от этого момента до конца уровня»;
-2. учим голову points (ответ типа score) на замороженном кодировщике;
+1. играем полные эпизоды итоговой политикой — так, как она будет играть
+   в игре (argmax или сэмпл с температурой, --play) — и записываем для
+   каждого решения признаки кодировщика, «погиб ли в ближайшие 2 с» и
+   «сколько очков набрано от этого момента до конца уровня»;
+2. учим головы points (ответ типа score) и danger (noul) заново на
+   замороженном кодировщике: у модели из подражания (ai/imitate.py)
+   кодировщик переучен, а головы остались от прошлой версии;
 3. подбираем температуру для danger и points на отложенной части
    эпизодов, чтобы вероятности совпадали с частотами;
 4. печатаем ECE (ожидаемую ошибку калибровки) до и после.
@@ -27,6 +30,7 @@ import torch
 from torch import nn
 
 from ai.env import MarioEnv
+from ai.features import model_view
 from ai.model import POINT_BIN_LABELS, points_to_bin
 from ai.train import DANGER_HORIZON, MODEL_DIR, RUNS_DIR, load_checkpoint, save_checkpoint, to_torch
 
@@ -54,7 +58,7 @@ def level_factories(n_generated: int, seed: int):
 
 
 @torch.no_grad()
-def collect(model, factories, deterministic: bool):
+def collect(model, factories, deterministic: bool, temperature: float = 1.0):
     """Список эпизодов: признаки [T, d], danger-цели [T], очки-до-конца [T]."""
 
     episodes = []
@@ -64,10 +68,14 @@ def collect(model, factories, deterministic: bool):
         feats, points, dead_at = [], [], None
         step = 0
         while True:
-            batch = to_torch({k: v[None] for k, v in obs.items()}, "cpu")
+            view = model_view(obs, model)
+            batch = to_torch({k: v[None] for k, v in view.items()}, "cpu")
             h = model.encode(batch)
             logits = model.policy_head(h)
-            action = int(logits.argmax(-1)) if deterministic else int(torch.distributions.Categorical(logits=logits).sample())
+            if deterministic:
+                action = int(logits.argmax(-1))
+            else:
+                action = int(torch.distributions.Categorical(logits=logits / temperature).sample())
             feats.append(h[0].numpy())
             obs, _, terminated, truncated, info = env.step(action)
             points.append(info["points"])
@@ -129,7 +137,9 @@ def main() -> None:
     parser.add_argument("--model", default=str(MODEL_DIR / "mariojev_best.pt"))
     parser.add_argument("--out", default=str(MODEL_DIR / "mariojev_final.pt"))
     parser.add_argument("--episodes", type=int, default=120, help="процедурных эпизодов (+ train-уровни)")
-    parser.add_argument("--stochastic", action="store_true", help="играть с сэмплированием, а не argmax")
+    parser.add_argument("--play", choices=("argmax", "sample"), default=None,
+                        help="как модель играет в игре; по умолчанию — из чекпойнта (play_deterministic)")
+    parser.add_argument("--temperature", type=float, default=None, help="температура сэмпла; по умолчанию из чекпойнта")
     parser.add_argument("--seed", type=int, default=123)
     args = parser.parse_args()
 
@@ -137,14 +147,20 @@ def main() -> None:
     torch.set_num_threads(4)
 
     model, meta = load_checkpoint(Path(args.model))
+    deterministic = (args.play == "argmax") if args.play else bool(meta.get("play_deterministic", False))
+    temperature = args.temperature if args.temperature is not None else float(meta.get("play_temperature", 1.0))
     factories = level_factories(args.episodes, args.seed)
-    print(f"[calibrate] эпизодов: {len(factories)}", flush=True)
+    print(f"[calibrate] эпизодов: {len(factories)}, игра: "
+          f"{'argmax' if deterministic else f'сэмпл T={temperature:g}'}", flush=True)
 
-    episodes = collect(model, factories, deterministic=not args.stochastic)
+    episodes = collect(model, factories, deterministic=deterministic, temperature=temperature)
     rng = random.Random(args.seed)
     rng.shuffle(episodes)
     split = int(len(episodes) * 0.8)
     train_eps, hold_eps = episodes[:split], episodes[split:]
+    if len(hold_eps) < 2:
+        # Отложенные эпизоды делятся пополам: на подбор температуры и на честный ECE
+        parser.error(f"эпизодов {len(episodes)}: отложено {len(hold_eps)}, нужно хотя бы 2 — увеличьте --episodes")
 
     def stack(eps, key):
         return torch.as_tensor(np.concatenate([e[key] for e in eps]))
@@ -156,7 +172,7 @@ def main() -> None:
     print(f"[calibrate] решений: обучение {len(h_train):,}, проверка {len(h_hold):,}; "
           f"доля «погиб в 2 с» {float(d_hold.mean()):.3f}", flush=True)
 
-    # --- голова points на замороженном кодировщике -------------------
+    # --- головы points и danger на замороженном кодировщике ----------
     head = model.points_head
     for layer in head:
         if isinstance(layer, nn.Linear):
@@ -171,6 +187,23 @@ def main() -> None:
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+
+    # danger — только если в выборке есть смерти, иначе учить нечему
+    danger_retrained = int(d_train.sum()) >= 20
+    if danger_retrained:
+        danger = model.danger_head
+        for layer in danger:
+            if isinstance(layer, nn.Linear):
+                layer.reset_parameters()
+        optimizer = torch.optim.Adam(danger.parameters(), lr=1e-3, weight_decay=1e-4)
+        for epoch in range(40):
+            perm = torch.randperm(len(h_train))
+            for start in range(0, len(perm), 1024):
+                idx = perm[start:start + 1024]
+                loss = nn.functional.binary_cross_entropy_with_logits(danger(h_train[idx]).squeeze(-1), d_train[idx])
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
     # Температура подбирается на одной половине отложенных эпизодов, а ECE
     # честно меряется на другой: иначе параметр оценивается там же, где подобран
@@ -233,13 +266,15 @@ def main() -> None:
         "decisions_holdout": len(h_hold),
         "episodes_fit_eval": [len(fit_eps), len(eval_eps)],
         "notes": notes,
+        "play": "argmax" if deterministic else f"sample T={temperature:g}",
+        "danger_head_retrained": danger_retrained,
         "temperature": {"danger": t_danger, "points": t_points},
         "before": before,
         "after": after,
         "points_class_counts": counts.tolist(),
     }
 
-    meta = dict(meta, calibration=report)
+    meta = dict(meta, calibration=report, play_deterministic=deterministic, play_temperature=temperature)
     save_checkpoint(Path(args.out), model, meta)
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     (RUNS_DIR / "calibration.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))

@@ -1,7 +1,7 @@
 {
  "name": "Небесный мост",
- "description": "Длинные пропасти и цепочки парящих платформ. Монеты в воздухе — для тех, кто прыгает точно.",
- "time_limit": 85,
+ "description": "Длинные пропасти и цепочки парящих платформ. Монеты в воздухе — для тех, кто прыгает точно. Труба перед последней пропастью — в секретную комнату.",
+ "time_limit": 145,
  "objects": [
   {
    "x": 16.0,
@@ -585,6 +585,20 @@
    "texture_path": "resources/Blocks/Bricks/block_2.png"
   },
   {
+   "x": 2096.0,
+   "y": 304.0,
+   "category": "Blocks",
+   "resource": "Bricks",
+   "texture_path": "resources/Blocks/Bricks/img_6.png"
+  },
+  {
+   "x": 2096.0,
+   "y": 336.0,
+   "category": "Blocks",
+   "resource": "Bricks",
+   "texture_path": "resources/Blocks/Bricks/img_6.png"
+  },
+  {
    "x": 2128.0,
    "y": 144.0,
    "category": "Blocks",
@@ -611,6 +625,13 @@
    "category": "Blocks",
    "resource": "Bricks",
    "texture_path": "resources/Blocks/Bricks/block_2.png"
+  },
+  {
+   "x": 2160.0,
+   "y": 304.0,
+   "category": "Blocks",
+   "resource": "Bricks",
+   "texture_path": "resources/Blocks/Bricks/img_6.png"
   },
   {
    "x": 2192.0,
@@ -641,6 +662,13 @@
    "texture_path": "resources/Blocks/Bricks/block_2.png"
   },
   {
+   "x": 2224.0,
+   "y": 304.0,
+   "category": "Blocks",
+   "resource": "Bricks",
+   "texture_path": "resources/Blocks/Bricks/img_6.png"
+  },
+  {
    "x": 2256.0,
    "y": 144.0,
    "category": "Blocks",
@@ -667,6 +695,20 @@
    "category": "Blocks",
    "resource": "Bricks",
    "texture_path": "resources/Blocks/Bricks/block_2.png"
+  },
+  {
+   "x": 2288.0,
+   "y": 304.0,
+   "category": "Blocks",
+   "resource": "Bricks",
+   "texture_path": "resources/Blocks/Bricks/img_6.png"
+  },
+  {
+   "x": 2288.0,
+   "y": 336.0,
+   "category": "Blocks",
+   "resource": "Bricks",
+   "texture_path": "resources/Blocks/Bricks/img_6.png"
   },
   {
    "x": 2320.0,
@@ -968,6 +1010,13 @@
    "category": "Blocks",
    "resource": "Bricks",
    "texture_path": "resources/Blocks/Bricks/block_2.png"
+  },
+  {
+   "x": 4144.0,
+   "y": 304.0,
+   "category": "Blocks",
+   "resource": "Bricks",
+   "texture_path": "resources/Blocks/Bricks/img_6.png"
   },
   {
    "x": 4176.0,
@@ -1299,6 +1348,20 @@
    "texture_path": "resources/Blocks/Bricks/block_2.png"
   },
   {
+   "x": 5680.0,
+   "y": 208.0,
+   "category": "Blocks",
+   "resource": "Tubes",
+   "texture_path": "resources/Blocks/Tubes/img_2.png"
+  },
+  {
+   "x": 5680.0,
+   "y": 240.0,
+   "category": "Blocks",
+   "resource": "Tubes",
+   "texture_path": "resources/Blocks/Tubes/img.png"
+  },
+  {
    "x": 5712.0,
    "y": 144.0,
    "category": "Blocks",
@@ -1311,6 +1374,20 @@
    "category": "Blocks",
    "resource": "Bricks",
    "texture_path": "resources/Blocks/Bricks/block_2.png"
+  },
+  {
+   "x": 5712.0,
+   "y": 208.0,
+   "category": "Blocks",
+   "resource": "Tubes",
+   "texture_path": "resources/Blocks/Tubes/img_3.png"
+  },
+  {
+   "x": 5712.0,
+   "y": 240.0,
+   "category": "Blocks",
+   "resource": "Tubes",
+   "texture_path": "resources/Blocks/Tubes/img_1.png"
   },
   {
    "x": 5744.0,
@@ -2301,17 +2378,17 @@
   },
   {
    "x": 1488.0,
-   "y": 528.0,
-   "category": "objects",
-   "resource": "Coins",
-   "texture_path": "resources/objects/Coins/img.png"
-  },
-  {
-   "x": 1520.0,
    "y": 464.0,
    "category": "objects",
    "resource": "ScoreBlock",
    "texture_path": "resources/objects/ScoreBlock/img_4.png"
+  },
+  {
+   "x": 1488.0,
+   "y": 528.0,
+   "category": "objects",
+   "resource": "Coins",
+   "texture_path": "resources/objects/Coins/img.png"
   },
   {
    "x": 1520.0,
@@ -2700,6 +2777,13 @@
   },
   {
    "x": 3152.0,
+   "y": 528.0,
+   "category": "objects",
+   "resource": "ScoreBlock",
+   "texture_path": "resources/objects/ScoreBlock/img_4.png"
+  },
+  {
+   "x": 3152.0,
    "y": 560.0,
    "category": "objects",
    "resource": "Coins",
@@ -2711,13 +2795,6 @@
    "category": "objects",
    "resource": "Coins",
    "texture_path": "resources/objects/Coins/img.png"
-  },
-  {
-   "x": 3184.0,
-   "y": 528.0,
-   "category": "objects",
-   "resource": "ScoreBlock",
-   "texture_path": "resources/objects/ScoreBlock/img_4.png"
   },
   {
    "x": 3184.0,
@@ -2991,6 +3068,20 @@
    "category": "objects",
    "resource": "Coins",
    "texture_path": "resources/objects/Coins/img.png"
+  },
+  {
+   "x": 4112.0,
+   "y": 304.0,
+   "category": "objects",
+   "resource": "ScoreBlock",
+   "texture_path": "resources/objects/ScoreBlock/img_4.png"
+  },
+  {
+   "x": 4176.0,
+   "y": 304.0,
+   "category": "objects",
+   "resource": "ScoreBlock",
+   "texture_path": "resources/objects/ScoreBlock/img_4.png"
   },
   {
    "x": 4656.0,
@@ -3456,13 +3547,13 @@
   },
   {
    "x": 2192.0,
-   "y": 208.0,
+   "y": 336.0,
    "category": "Entities",
    "resource": "goomba",
    "texture_path": "resources/Entities/goomba/idle/img.png"
   },
   {
-   "x": 2288.0,
+   "x": 2384.0,
    "y": 208.0,
    "category": "Entities",
    "resource": "goomba",
@@ -3474,6 +3565,1057 @@
    "category": "Entities",
    "resource": "koopa",
    "texture_path": "resources/Entities/koopa/idle/img.png"
+  }
+ ],
+ "warps": [
+  {
+   "id": "skybridge",
+   "pipe": [
+    4400.0,
+    272.0
+   ],
+   "exit": [
+    5680.0,
+    240.0
+   ],
+   "room": {
+    "theme": "underground",
+    "objects": [
+     {
+      "x": 16.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 16.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 16.0,
+      "y": 80.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 16.0,
+      "y": 112.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 16.0,
+      "y": 144.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 16.0,
+      "y": 176.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 16.0,
+      "y": 208.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 16.0,
+      "y": 240.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 16.0,
+      "y": 272.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 16.0,
+      "y": 304.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 16.0,
+      "y": 336.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 16.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 48.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 48.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 48.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 80.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 80.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 80.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 112.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 112.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 112.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 144.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 144.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 144.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 176.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 176.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 176.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 208.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 208.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 208.0,
+      "y": 176.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 208.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 240.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 240.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 240.0,
+      "y": 176.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 240.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 272.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 272.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 272.0,
+      "y": 176.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 272.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 304.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 304.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 304.0,
+      "y": 176.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 304.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 336.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 336.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 336.0,
+      "y": 176.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 336.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 368.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 368.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 368.0,
+      "y": 176.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 368.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 400.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 400.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 400.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 432.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 432.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 432.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 464.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 464.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 464.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 496.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 496.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 496.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 528.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 528.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 528.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 560.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 560.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 560.0,
+      "y": 80.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_10.png"
+     },
+     {
+      "x": 560.0,
+      "y": 112.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_11.png"
+     },
+     {
+      "x": 560.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 592.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 592.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 592.0,
+      "y": 80.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_9.png"
+     },
+     {
+      "x": 592.0,
+      "y": 112.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_8.png"
+     },
+     {
+      "x": 592.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 624.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 624.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 624.0,
+      "y": 80.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_7.png"
+     },
+     {
+      "x": 624.0,
+      "y": 112.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_5.png"
+     },
+     {
+      "x": 624.0,
+      "y": 144.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_2.png"
+     },
+     {
+      "x": 624.0,
+      "y": 176.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_2.png"
+     },
+     {
+      "x": 624.0,
+      "y": 208.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_2.png"
+     },
+     {
+      "x": 624.0,
+      "y": 240.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_2.png"
+     },
+     {
+      "x": 624.0,
+      "y": 272.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_2.png"
+     },
+     {
+      "x": 624.0,
+      "y": 304.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_2.png"
+     },
+     {
+      "x": 624.0,
+      "y": 336.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_2.png"
+     },
+     {
+      "x": 624.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 656.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 656.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 656.0,
+      "y": 80.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_6.png"
+     },
+     {
+      "x": 656.0,
+      "y": 112.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_4.png"
+     },
+     {
+      "x": 656.0,
+      "y": 144.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_3.png"
+     },
+     {
+      "x": 656.0,
+      "y": 176.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_3.png"
+     },
+     {
+      "x": 656.0,
+      "y": 208.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_3.png"
+     },
+     {
+      "x": 656.0,
+      "y": 240.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_3.png"
+     },
+     {
+      "x": 656.0,
+      "y": 272.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_3.png"
+     },
+     {
+      "x": 656.0,
+      "y": 304.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_3.png"
+     },
+     {
+      "x": 656.0,
+      "y": 336.0,
+      "category": "Blocks",
+      "resource": "Tubes",
+      "texture_path": "resources/Blocks/Tubes/img_3.png"
+     },
+     {
+      "x": 656.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 688.0,
+      "y": 16.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 688.0,
+      "y": 48.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/block_2.png"
+     },
+     {
+      "x": 688.0,
+      "y": 80.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 688.0,
+      "y": 112.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 688.0,
+      "y": 144.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 688.0,
+      "y": 176.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 688.0,
+      "y": 208.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 688.0,
+      "y": 240.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 688.0,
+      "y": 272.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 688.0,
+      "y": 304.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 688.0,
+      "y": 336.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 688.0,
+      "y": 368.0,
+      "category": "Blocks",
+      "resource": "Bricks",
+      "texture_path": "resources/Blocks/Bricks/img_6.png"
+     },
+     {
+      "x": 112.0,
+      "y": 80.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 112.0,
+      "y": 176.0,
+      "category": "objects",
+      "resource": "ScoreBlock",
+      "texture_path": "resources/objects/ScoreBlock/img_4.png"
+     },
+     {
+      "x": 144.0,
+      "y": 80.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 176.0,
+      "y": 80.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 208.0,
+      "y": 80.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 208.0,
+      "y": 208.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 208.0,
+      "y": 240.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 208.0,
+      "y": 304.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 240.0,
+      "y": 80.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 240.0,
+      "y": 208.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 240.0,
+      "y": 240.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 240.0,
+      "y": 304.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 272.0,
+      "y": 80.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 272.0,
+      "y": 208.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 272.0,
+      "y": 240.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 272.0,
+      "y": 304.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 304.0,
+      "y": 80.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 304.0,
+      "y": 208.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 304.0,
+      "y": 240.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 304.0,
+      "y": 304.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 336.0,
+      "y": 80.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 336.0,
+      "y": 208.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 336.0,
+      "y": 240.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 336.0,
+      "y": 304.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 368.0,
+      "y": 80.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 368.0,
+      "y": 208.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 368.0,
+      "y": 240.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 368.0,
+      "y": 304.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 400.0,
+      "y": 80.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 432.0,
+      "y": 80.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 464.0,
+      "y": 80.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 464.0,
+      "y": 176.0,
+      "category": "objects",
+      "resource": "ScoreBlock",
+      "texture_path": "resources/objects/ScoreBlock/img_4.png"
+     },
+     {
+      "x": 496.0,
+      "y": 80.0,
+      "category": "objects",
+      "resource": "Coins",
+      "texture_path": "resources/objects/Coins/img.png"
+     },
+     {
+      "x": 496.0,
+      "y": 176.0,
+      "category": "objects",
+      "resource": "ScoreBlock",
+      "texture_path": "resources/objects/ScoreBlock/img_4.png"
+     },
+     {
+      "x": 80.0,
+      "y": 304.0,
+      "category": "Entities",
+      "resource": "mario",
+      "texture_path": "resources/Entities/mario/idle/Mario.gif"
+     }
+    ],
+    "exit": [
+     560.0,
+     80.0
+    ]
+   }
   }
  ]
 }

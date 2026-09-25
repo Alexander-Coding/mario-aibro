@@ -1367,6 +1367,10 @@ class LevelEditorView(arcade.View):
         self.dynamic_map_width = 0.0
         self._invalidate_map_width()
 
+        # Очистка — это новая карта: name, time_limit и warps с координатами
+        # труб прежнего уровня в неё не переносятся (ни из загруженного, ни с диска)
+        self._loaded_template = {}
+
         self.target_camera_x = self.get_camera_min_x()
         self._camera_wheel_velocity = 0.0
 
@@ -1381,17 +1385,45 @@ class LevelEditorView(arcade.View):
             return None
         return (RESOURCES_DIR / obj.category / obj.name / Path(obj.texture_path)).as_posix()
 
+    def _level_template(self) -> dict:
+        """Ключи уровня в порядке файла; objects — только как место в порядке.
+
+        Редактор не показывает name, time_limit, theme, warps и прочее, но и
+        терять их при сохранении не должен: берём их из загруженного файла,
+        а если карту ещё не загружали — из того, что сейчас лежит на диске.
+        После «Очистить» шаблон пустой: новая карта сохраняется без чужих ключей.
+        """
+
+        template = getattr(self, "_loaded_template", None)
+        if template is not None:
+            return template
+
+        try:
+            data = json.loads(MAP_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {key: (None if key == "objects" else value) for key, value in data.items()}
+
     def save_map(self):
-        data = {"objects": []}
+        objects = []
 
         for obj in self.objects:
-            data["objects"].append({
+            objects.append({
                 "x": obj.x,
                 "y": obj.y,
                 "category": obj.category,
                 "resource": obj.name,
                 "texture_path": self.get_json_texture_path(obj),
             })
+
+        # Лишние ключи файла — на своих местах, objects — на своём (или в конце)
+        data = {
+            key: (objects if key == "objects" else value)
+            for key, value in self._level_template().items()
+        }
+        data["objects"] = objects
 
         MAP_FILE.parent.mkdir(parents=True, exist_ok=True)
         MAP_FILE.write_text(
@@ -1409,6 +1441,11 @@ class LevelEditorView(arcade.View):
 
         try:
             data = json.loads(MAP_FILE.read_text(encoding="utf-8"))
+
+            # Лишние ключи (name, time_limit, warps…) вернутся в файл при сохранении
+            self._loaded_template = {
+                key: (None if key == "objects" else value) for key, value in data.items()
+            }
 
             self.objects.clear()
             self.object_sprites.clear()

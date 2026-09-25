@@ -22,7 +22,22 @@
 - "potential": γ·Φ(s') − Φ(s). Инвариантна, но при γ < 0.99 даёт дрейф
   −(1−γ)·Φ за шаг: у финиша при γ=0.97 это −0.9 за шаг, больше, чем
   награда за бег. На первых двух итерациях (γ=0.995) политика училась
-  медленно: градиент политики равнялся градиенту энтропии.
+  медленно: градиент политики равнялся градиенту энтропии;
+- "collect" (с итерации 6): «проходить, а не спидранить». Модель it4a
+  на 1-1 брала 2 удара по «?» из 33, 1 врага из 12 и ни одной монеты —
+  3 360 из 5 660 очков давал бонус за время. Причина — дисконт: с γ=0.97
+  (горизонт ~2 с) задержка ради четырёх ударов по блоку обесценивает всё,
+  что впереди, и бег выгоднее. Поэтому:
+  · подсказка за продвижение слабее (progress_scale, по умолчанию 10);
+  · штраф за оставленное: когда предмет ушёл на 5 тайлов за спину (лучший
+    X), а его не взяли, — miss_penalty × его очки/100: монета, каждый
+    невыбитый удар блока «?», живой враг. Штраф приходит через ~1 с после
+    решения пробежать мимо, а не в конце уровня — дисконт его не съедает.
+    Выход из комнаты с несобранным — тот же штраф за оставленное в ней.
+    Пропущенное прыжком через трубу-выход не штрафуется: это честный
+    срез пути, как в Super Mario Bros;
+  · secret_bonus за первый вход в секретную комнату — чтобы «вниз» на
+    трубе нашлось, пока монеты комнаты ещё не выучены.
 """
 
 from __future__ import annotations
@@ -37,6 +52,7 @@ from gymnasium import spaces
 from core import rules
 from core.levels import load_levels
 from core.world import GameWorld, Inputs
+from Objects.Coin import Coin
 from ai.features import (
     ACTIONS,
     GRID_H,
@@ -60,10 +76,65 @@ DEATH_PENALTY = 10.0
 # Эпизод обрезается, если столько шагов подряд нет нового лучшего X
 STUCK_STEPS = 600
 
+# Режим "collect"
+COLLECT_PROGRESS_SCALE = 10.0
+MISS_PENALTY = 0.5
+SECRET_BONUS = 3.0
+MISS_MARGIN = 5 * rules.TILE        # предмет «оставлен», когда он на 5 тайлов позади
+
 
 def action_inputs(action: int, first_frame: bool) -> Inputs:
-    _, right, left, jump = ACTIONS[int(action)]
-    return Inputs(right=right, left=left, jump=jump and first_frame)
+    _, right, left, jump, down = ACTIONS[int(action)]
+    return Inputs(right=right, left=left, jump=jump and first_frame, down=down)
+
+
+class MissTracker:
+    """Что игрок оставил позади несобранным — для штрафа режима "collect".
+
+    Предметы части уровня сортируются по X; указатель идёт за лучшим X
+    игрока. Монета оставлена, если её спрайт ещё в уровне; блок — сколько
+    в нём осталось ударов; враг — если жив (враги ходят, поэтому их
+    проверяем каждый шаг, а не по указателю)."""
+
+    def __init__(self, area):
+        self.area = area
+        items = [(obj.center_x, "coin", obj) for obj in area.objects if isinstance(obj, Coin)]
+        items += [(block.center_x, "block", block) for block in area.blocks]
+        items.sort(key=lambda item: item[0])
+        self.items = items
+        self.cursor = 0
+        self.enemies = [enemy for enemy in area.enemies]
+
+    @staticmethod
+    def _left_points(kind: str, obj) -> int:
+        if kind == "coin":
+            return 100 if obj.sprite_lists else 0
+        return 100 * max(obj.state, 0)
+
+    def advance(self, x_behind: float, penalize: bool = True) -> float:
+        """Очки/100, оставленные позади x_behind (без штрафа — просто пропустить)."""
+
+        left = 0
+        while self.cursor < len(self.items) and self.items[self.cursor][0] < x_behind:
+            _, kind, obj = self.items[self.cursor]
+            left += self._left_points(kind, obj)
+            self.cursor += 1
+
+        still = []
+        for enemy in self.enemies:
+            if not enemy.is_alive or not enemy.sprite_lists:
+                continue
+            if enemy.center_x < x_behind:
+                left += 100
+            else:
+                still.append(enemy)
+        self.enemies = still
+
+        return left / POINTS_SCALE if penalize else 0.0
+
+    def remaining(self) -> float:
+        """Всё, что ещё не взято (выход из комнаты)."""
+        return self.advance(float("inf"))
 
 
 # ===============================================================
@@ -85,17 +156,21 @@ class LevelSampler:
         difficulty: float = 0.3,
         levels: Optional[list] = None,
         seed: Optional[int] = None,
+        drill: float = 0.0,
     ):
         self.mix = mix
+        self.drill = drill
         self.difficulty = difficulty
         self.rng = random.Random(seed)
         self.train_levels = levels if levels is not None else load_levels(split="train")
         self._generator: Optional[Callable] = None
+        self._drill: Optional[Callable] = None
         self._generator_error: Optional[str] = None
 
         try:
-            from ai.levelgen import generate_level
+            from ai.levelgen import build_drill, generate_level
             self._generator = generate_level
+            self._drill = build_drill
         except Exception as error:  # генератор ещё не готов или сломан
             self._generator_error = repr(error)
 
@@ -103,6 +178,11 @@ class LevelSampler:
         self.difficulty = float(np.clip(difficulty, 0.0, 1.0))
 
     def sample(self) -> GameWorld:
+        # Тренировка навыка (арена с блоками «?», без флага) — ai/levelgen.build_drill
+        if self._drill is not None and self.drill > 0 and self.rng.random() < self.drill:
+            seed = self.rng.randrange(1_000_000_000)
+            return GameWorld(self._drill(seed, self.rng.uniform(0.0, self.difficulty)))
+
         use_generated = self._generator is not None and (
             not self.train_levels or self.rng.random() < self.mix
         )
@@ -140,11 +220,22 @@ class MarioEnv(gym.Env):
         max_steps: int = 6000,
         reward_mode: str = "progress",
         gamma: float = GAMMA,
+        progress_scale: Optional[float] = None,
+        miss_penalty: float = MISS_PENALTY,
+        secret_bonus: float = SECRET_BONUS,
     ):
         super().__init__()
 
         self.reward_mode = reward_mode
         self.gamma = gamma
+        collect = reward_mode == "collect"
+        self.progress_scale = float(
+            progress_scale if progress_scale is not None
+            else (COLLECT_PROGRESS_SCALE if collect else SHAPING_SCALE)
+        )
+        self.miss_penalty = float(miss_penalty) if collect else 0.0
+        self.secret_bonus = float(secret_bonus) if collect else 0.0
+        self._misses: dict[str, MissTracker] = {}
 
         self.sampler = sampler
         self.world_factory = world_factory
@@ -200,6 +291,8 @@ class MarioEnv(gym.Env):
 
         self.world = self._new_world()
         self.features = FeatureBuilder(self.world)
+        # У тренировки без флага своя длина эпизода — дальше обрезка, а не смерть
+        self.episode_steps = int(self.world.level_data.get("train_steps") or self.max_steps)
 
         self.last_action = 0
         self.steps = 0
@@ -207,23 +300,35 @@ class MarioEnv(gym.Env):
         self.progress_x = self.world.player.center_x
         self.since_best = 0
         self.potential = self._phi()
+        self._misses = {}
+        self.missed = 0.0
 
         return self.features.build(self.last_action), {"level": self.world.name}
+
+    def _tracker(self, area) -> MissTracker:
+        tracker = self._misses.get(area.key)
+        if tracker is None:
+            tracker = self._misses[area.key] = MissTracker(area)
+        return tracker
 
     def step(self, action: int):
         world = self.world
         score_before = world.score
         hits_before = world.stats["hits"]
 
-        for frame in range(self.frame_skip):
-            if world.done or world.finishing:
-                break
-            world.step(action_inputs(action, frame == 0))
+        area_before = world.area
+        secrets_before = world.stats["secret"]
+        events = []
 
-        # Заставка финиша от решений не зависит (таймер в ней стоит) —
-        # проматываем её за один шаг, чтобы не тратить шаги обучения
-        while world.finishing and not world.done:
-            world.step(Inputs())
+        for frame in range(self.frame_skip):
+            if world.done or world.cutscene:
+                break
+            events += world.step(action_inputs(action, frame == 0))
+
+        # Заставки (флагшток, труба) от решений не зависят, таймер в них
+        # стоит — проматываем за один шаг, чтобы не тратить шаги обучения
+        while world.cutscene and not world.done:
+            events += world.step(Inputs())
 
         self.steps += 1
         self.last_action = int(action)
@@ -243,26 +348,60 @@ class MarioEnv(gym.Env):
             new_potential = 0.0 if terminated else self._phi()
             reward += self.gamma * new_potential - self.potential
             self.potential = new_potential
-        else:
+        elif not world.in_room:
             x = min(world.player.center_x, world.geometry.door_x)
             gained = max(0.0, x - self.progress_x)
             self.progress_x = max(self.progress_x, x)
-            reward += SHAPING_SCALE * gained / self._span()
+            reward += self.progress_scale * gained / self._span()
+
+        if self.reward_mode == "collect":
+            reward += self.secret_bonus * (world.stats["secret"] - secrets_before)
+            reward -= self.miss_penalty * self._collect_misses(world, area_before, events)
 
         # --- застрял -------------------------------------------------
-        if world.player.center_x > self.best_x + 1.0:
+        # Набрал очки — не застрял: в комнате свои координаты, а выбивать
+        # блок можно и стоя на месте
+        if not world.in_room and world.player.center_x > self.best_x + 1.0:
             self.best_x = world.player.center_x
+            self.since_best = 0
+        elif points > 0:
             self.since_best = 0
         else:
             self.since_best += 1
 
         truncated = not terminated and (
-            self.steps >= self.max_steps or self.since_best >= STUCK_STEPS
+            self.steps >= self.episode_steps or self.since_best >= STUCK_STEPS
         )
 
         info = {"points": points}
         if terminated or truncated:
-            info["episode_summary"] = world.summary()
+            world_summary = world.summary()
+            info["episode_summary"] = world_summary
             info["episode_summary"]["truncated"] = bool(truncated)
+            info["episode_summary"]["missed"] = round(self.missed, 2)
+            info["episode_summary"]["drill"] = "train_steps" in world.level_data
+            info["episode_summary"]["steps"] = self.steps
 
         return self.features.build(self.last_action), float(reward), terminated, truncated, info
+
+    def _collect_misses(self, world: GameWorld, area_before, events) -> float:
+        """Сколько очков/100 оставлено позади за этот шаг."""
+
+        missed = 0.0
+
+        # Вышел из комнаты — оставленное в ней уже не взять
+        if area_before is not world.main and world.area is world.main:
+            missed += self._tracker(area_before).remaining()
+
+        if not world.in_room:
+            tracker = self._tracker(world.main)
+            # Вылез из трубы-выхода: всё, что перепрыгнули, — не штраф
+            warped = any(e.kind == "pipe" and e.info.get("dir") == "up" for e in events)
+            behind = world.max_x - MISS_MARGIN
+            if warped:
+                tracker.advance(behind, penalize=False)
+            elif not world.done or world.won:
+                missed += tracker.advance(behind)
+
+        self.missed += missed
+        return missed

@@ -34,11 +34,36 @@ PAUSE_BUTTON = (48, 54, 76)
 PAUSE_BUTTON_HOVER = (86, 128, 255)
 PAUSE_TEXT = (238, 240, 250)
 
-# Клавиши: движение держим, прыжок — нажатие
+# Клавиши: движение и «вниз» держим, прыжок — нажатие
 KEYS_RIGHT = (arcade.key.RIGHT, arcade.key.D)
 KEYS_LEFT = (arcade.key.LEFT, arcade.key.A)
+KEYS_DOWN = (arcade.key.DOWN, arcade.key.S)
 KEYS_JUMP = (arcade.key.SPACE, arcade.key.UP, arcade.key.W)
 KEYS_ENTER = (arcade.key.ENTER, arcade.key.RETURN, arcade.key.NUM_ENTER)
+
+# Фон по теме части уровня: небо над уровнем, темнота в секретной комнате
+THEME_BACKGROUNDS = {
+    "overworld": (147, 187, 236),
+    "underground": (10, 10, 18),
+}
+DEFAULT_BACKGROUND = THEME_BACKGROUNDS["overworld"]
+
+# Слои мира снизу вверх. В трубе игрок уходит под стены — видно, как он
+# погружается в трубу и вылезает из неё
+WORLD_LAYERS = ("block_coins", "walls", "decorations", "objects", "enemies", "player")
+PIPE_LAYERS = ("player", "block_coins", "walls", "decorations", "objects", "enemies")
+
+
+def _axis_bounds(low: float, high: float, size: float) -> tuple[float, float]:
+    """Где может стоять центр камеры по одной оси, чтобы не выйти за [low, high].
+
+    Часть уровня меньше окна — центр один, посередине.
+    """
+
+    if high - low <= size:
+        middle = (low + high) / 2
+        return middle, middle
+    return low + size / 2, high - size / 2
 
 
 class PauseButton:
@@ -80,7 +105,7 @@ class GameView(arcade.View):
         self.ai_mode = ai_mode
         self.return_to_menu = return_to_menu
 
-        self.background_color = arcade.color.Color(147, 187, 236)
+        self.background_color = arcade.color.Color(*DEFAULT_BACKGROUND)
 
         # Сеанс: уровни, мир, итоги. Модель ИИ грузим после первого кадра —
         # иначе окно на секунды замрёт на меню, пока импортируется torch
@@ -96,9 +121,9 @@ class GameView(arcade.View):
         self.camera: Optional[arcade.Camera2D] = None
         self.gui_camera: Optional[arcade.Camera2D] = None
 
-        # Какой мир сейчас у камеры: сменился уровень — камера прыгает к игроку
-        self._camera_serial = -1
-        self._camera_floor = 0.0
+        # Какой мир и какая его часть сейчас у камеры: сменился уровень или
+        # игрок ушёл в секретную комнату — камера прыгает к игроку
+        self._camera_key: Optional[tuple] = None
 
         # Клавиатура: что держим и было ли нажатие прыжка с прошлого кадра
         self.keys_held: set[int] = set()
@@ -236,15 +261,11 @@ class GameView(arcade.View):
         if self.camera:
             self.camera.use()
 
-        world.walls.draw()
-        world.decorations.draw()
-        world.objects.draw()
-        world.enemies.draw()
+        for layer in self.world_layers():
+            self._draw_layer(layer)
 
-        # Вошёл в замок — игрока не видно
-        player = world.player
-        if player is not None and player.visible:
-            player.playerSprite.draw()
+        if session.pipe_hint:
+            hud.draw_pipe_hint(self.texts, world.player, session.state_time)
 
         hud.draw_popups(self.texts, session.popups)
 
@@ -266,6 +287,9 @@ class GameView(arcade.View):
 
         if session.state == PLAYING and session.flag_banner is not None:
             hud.draw_flag_banner(self.texts, session.flag_banner, width, height)
+
+        if session.state == PLAYING and session.banner is not None:
+            hud.draw_banner(self.texts, session.banner, width, height)
 
         # =====================
         # ЭКРАНЫ ИТОГОВ
@@ -290,6 +314,52 @@ class GameView(arcade.View):
             self._draw_pause_overlay()
 
         self._frames_drawn += 1
+
+    def world_layers(self) -> tuple[str, ...]:
+        """Порядок слоёв мира снизу вверх: в трубе игрок рисуется под стенами."""
+        return PIPE_LAYERS if self.session.world.in_pipe else WORLD_LAYERS
+
+    def _draw_layer(self, layer: str) -> None:
+        world = self.session.world
+
+        if layer == "walls":
+            self._draw_walls()
+        elif layer == "decorations":
+            world.decorations.draw()
+        elif layer == "objects":
+            world.objects.draw()
+        elif layer == "enemies":
+            world.enemies.draw()
+        elif layer == "block_coins":
+            # До стен: монета выходит из блока «?», а не появляется над ним
+            hud.draw_block_coins(self.session.block_coins)
+        elif layer == "player":
+            # Вошёл в замок — игрока не видно
+            player = world.player
+            if player is not None and player.visible:
+                player.playerSprite.draw()
+
+    def _draw_walls(self) -> None:
+        """Стены; блок «?», по которому только что ударили, подпрыгивает.
+
+        Блок сдвигается только на время отрисовки и сразу возвращается на
+        место ровно в прежнюю координату: мир (физика, сетка тайлов) между
+        шагами не видит сдвига.
+        """
+
+        world = self.session.world
+        blocks = world.blocks
+        moved = []
+        for bump in self.session.bumps:
+            block = bump.block
+            if any(block is candidate for candidate in blocks):
+                moved.append((block, block.center_y))
+                block.center_y = block.center_y + bump.offset
+        try:
+            world.walls.draw()
+        finally:
+            for block, y in moved:
+                block.center_y = y
 
     def _draw_pause_overlay(self):
         """Отрисовка оверлея паузы."""
@@ -391,9 +461,9 @@ class GameView(arcade.View):
         self._jump_pressed = False
 
         # =====================
-        # КАМЕРА
+        # КАМЕРА И ФОН
         # =====================
-        if session.world_serial != self._camera_serial:
+        if self._area_key() != self._camera_key:
             self._snap_camera()
         else:
             self.update_camera(delta_time)
@@ -408,39 +478,68 @@ class GameView(arcade.View):
             right=any(key in held for key in KEYS_RIGHT),
             left=any(key in held for key in KEYS_LEFT),
             jump=self._jump_pressed,
+            down=any(key in held for key in KEYS_DOWN),
         )
 
     # ========================================================
     # CAMERA
     # ========================================================
 
-    def _camera_bounds(self) -> tuple[float, float, float]:
-        """Границы центра камеры: не левее начала уровня, не правее конца, не ниже земли."""
+    def _area_key(self) -> tuple:
+        """Уровень (номер пересборки мира) и часть уровня, где сейчас игрок."""
+        world = self.session.world
+        area = getattr(world, "area", None)
+        return self.session.world_serial, getattr(area, "key", "main")
+
+    def _camera_bounds(self) -> tuple[float, float, float, float]:
+        """Границы центра камеры по текущей части уровня: (min_x, max_x, min_y, max_y).
+
+        Уровень: не левее начала, не правее конца, не ниже земли, вверх —
+        за игроком. Секретная комната — закрытая коробка: камера не выходит
+        за стены и потолок, а комнату меньше окна держит по центру (сверху
+        с поправкой на полосу HUD).
+        """
 
         width, height = self._size()
-        geometry = self.session.world.geometry
+        world = self.session.world
+        area = getattr(world, "area", None)
 
-        min_x = geometry.left + width / 2
-        max_x = max(min_x, geometry.right - width / 2)
-        min_y = self._camera_floor + height / 2
+        if area is None:
+            geometry = world.geometry
+            left, right = geometry.left, geometry.right
+            bottom = min((wall.bottom for wall in world.walls), default=0.0)
+            top = None
+        else:
+            left, right, bottom = area.left, area.right, area.bottom
+            top = area.top if getattr(world, "in_room", False) else None
 
-        return min_x, max_x, min_y
+        min_x, max_x = _axis_bounds(left, right, width)
+        if top is None:
+            min_y, max_y = bottom + height / 2, float("inf")
+        else:
+            min_y, max_y = _axis_bounds(bottom, top + hud.HUD_BAR_HEIGHT, height)
+
+        return min_x, max_x, min_y, max_y
 
     def _snap_camera(self) -> None:
-        """Новый уровень: камера сразу у игрока, без проезда через весь уровень."""
+        """Новый уровень или другая его часть: камера сразу у игрока, без
+        проезда через весь уровень. Фон — по теме части."""
+
+        world = self.session.world
+        self._camera_key = self._area_key()
+
+        area = getattr(world, "area", None)
+        theme = getattr(area, "theme", "overworld")
+        self.background_color = arcade.color.Color(*THEME_BACKGROUNDS.get(theme, DEFAULT_BACKGROUND))
 
         if not self.camera:
             return
 
-        world = self.session.world
-        self._camera_serial = self.session.world_serial
-        self._camera_floor = min((wall.bottom for wall in world.walls), default=0.0)
-
-        min_x, max_x, min_y = self._camera_bounds()
+        min_x, max_x, min_y, max_y = self._camera_bounds()
         player = world.player
 
         x = min(max(player.center_x, min_x), max_x)
-        y = max(player.center_y, min_y)
+        y = min(max(player.center_y, min_y), max_y)
 
         self.camera.position = (x, y)
 
@@ -486,9 +585,9 @@ class GameView(arcade.View):
             elif player.center_y > dead_top:
                 target_y += player.center_y - dead_top
 
-        min_x, max_x, min_y = self._camera_bounds()
+        min_x, max_x, min_y, max_y = self._camera_bounds()
         target_x = min(max(target_x, min_x), max_x)
-        target_y = max(target_y, min_y)
+        target_y = min(max(target_y, min_y), max_y)
 
         speed = min(CAMERA_SPEED * delta_time, 1.0)
 
